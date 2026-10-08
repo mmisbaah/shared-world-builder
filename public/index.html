@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Shared World Builder</title>
+<link rel="stylesheet" href="/style.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+
+<div id="viewport"></div>
+
+<!-- Boot / fatal gate -------------------------------------------------- -->
+<div id="boot" class="boot">
+  <div class="boot-card">
+    <div class="boot-mark"><i class="fa-solid fa-cubes"></i></div>
+    <h1>Shared World Builder</h1>
+    <p id="boot-status">Initialising chunk mesh engine…</p>
+    <div class="boot-bar"><div id="boot-bar-fill"></div></div>
+  </div>
+</div>
+
+<!-- Top bar ------------------------------------------------------------ -->
+<header class="hud hud-top">
+  <div class="panel panel-title">
+    <div class="mark"><i class="fa-solid fa-cubes"></i></div>
+    <div class="title-text">
+      <h1>SHARED WORLD BUILDER <span class="tag">WebGL2</span></h1>
+      <p class="mono">
+        chunks <b id="stat-chunks">0</b> ·
+        quads <b id="stat-quads">0</b> ·
+        verts <b id="stat-verts">0</b> ·
+        <span id="stat-fps" class="dim">— fps</span>
+      </p>
+    </div>
+  </div>
+
+  <div class="panel panel-net">
+    <div class="net-item">
+      <span class="dot" id="net-dot"></span>
+      <span id="net-text">connecting</span>
+    </div>
+    <div class="sep"></div>
+    <div class="net-item mono">rtt <b id="stat-ping">—</b></div>
+    <div class="sep"></div>
+    <div class="net-item mono" title="Operations still awaiting server acknowledgement">
+      in-flight <b id="stat-inflight">0</b>
+    </div>
+    <div class="sep"></div>
+    <button id="btn-conflict" class="btn btn-danger">
+      <i class="fa-solid fa-bolt-lightning"></i> Force conflict
+    </button>
+  </div>
+</header>
+
+<!-- Left rail ---------------------------------------------------------- -->
+<aside class="hud hud-left">
+  <section class="panel">
+    <div class="panel-head">
+      <span>Co-op builders</span>
+      <i class="fa-solid fa-users text-cyan-300"></i>
+    </div>
+    <div id="builders" class="list"></div>
+  </section>
+
+  <!-- Minimap sits in the rail, below the builder list. It was placed three ways
+       first: as a fixed box in the bottom-left (overlapped the Pipeline panel),
+       then in the footer beside the toolbar (which made the footer 150px taller
+       and pushed its bounding box into the rail), then as a fourth rail panel,
+       which fitted but squeezed the delta log to a 19px body. A panel that fits
+       and is useless is worse than no panel, so the Pipeline readout moved behind
+       the F key and the map took its slot. All of this verified by measuring
+       boxes rather than by eye. -->
+  <section class="panel panel-map">
+    <div class="panel-head">
+      <span>Map</span>
+      <i class="fa-solid fa-map text-cyan-300"></i>
+    </div>
+    <div id="minimap-host" class="minimap-host"></div>
+  </section>
+
+  <section class="panel panel-grow">
+    <div class="panel-head">
+      <span>Chunk delta stream</span>
+      <i class="fa-solid fa-network-wired text-indigo-300"></i>
+    </div>
+    <div id="log" class="log mono"></div>
+  </section>
+</aside>
+
+<!-- Right rail --------------------------------------------------------- -->
+<aside class="hud hud-right">
+  <section class="panel panel-objective">
+    <div class="panel-head">
+      <span>Shared goals</span>
+      <i class="fa-solid fa-bullseye text-amber-300"></i>
+    </div>
+    <!-- Server-verified progress. The client never computes this. -->
+    <div id="objectives" class="objectives"></div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head">
+      <span>Controls</span>
+      <i class="fa-solid fa-keyboard text-slate-300"></i>
+    </div>
+    <dl class="keys">
+      <dt>L-Click</dt><dd>place / break</dd>
+      <dt>L-Drag sky</dt><dd>orbit</dd>
+      <dt>R-Drag</dt><dd>orbit</dd>
+      <dt>M-Drag</dt><dd>pan</dd>
+      <dt>Wheel</dt><dd>zoom</dd>
+      <dt>&larr;&uarr;&rarr;&darr;</dt><dd>orbit keyboard</dd>
+      <dt>R</dt><dd>rotate prop</dd>
+      <dt>G</dt><dd>grid overlay</dd>
+      <dt>1/2/3</dt><dd>tool</dd>
+      <dt>F</dt><dd>frame stats</dd>
+      <dt>M</dt><dd>mute audio</dd>
+      <dt>C</dt><dd>claim ground</dd>
+      <dt>Shift+C</dt><dd>claim size</dd>
+    </dl>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head">
+      <span>Territory</span>
+      <i class="fa-solid fa-flag text-slate-300"></i>
+    </div>
+    <div id="claim"></div>
+  </section>
+</aside>
+
+<!-- First-run coach ------------------------------------------------------
+     Sits over the viewport, bottom centre, so it never covers the world you are
+     being asked to click. Removed entirely once finished. -->
+<div id="coach" class="coach" role="status" aria-live="polite"></div>
+
+<!-- Bottom bar --------------------------------------------------------- -->
+<footer class="hud hud-bottom">
+  <div class="panel panel-tools">
+    <button class="tool active" data-tool="build"><i class="fa-solid fa-cube"></i> Build</button>
+    <button class="tool" data-tool="decor"><i class="fa-solid fa-chair"></i> Decor</button>
+    <button class="tool tool-danger" data-tool="destroy"><i class="fa-solid fa-burst"></i> Destroy</button>
+    <div class="sep"></div>
+    <button id="btn-claim" class="btn btn-ghost" aria-pressed="false"
+            title="Claim the ground you are looking at (C)"><i class="fa-solid fa-flag"></i> <span>Claim</span></button>
+    <div class="sep"></div>
+    <button id="btn-bots" class="btn btn-indigo"><i class="fa-solid fa-robot"></i> <span id="bots-text">Pause bots</span></button>
+    <div class="sep"></div>
+    <button id="btn-quality" class="btn btn-ghost"><i class="fa-solid fa-gauge-high"></i> <span id="quality-text">Quality: High</span></button>
+    <div class="sep"></div>
+    <button id="btn-audio" class="btn btn-ghost" aria-pressed="false"
+            title="Press M or click to mute."><i class="fa-solid fa-volume-high"></i> <span>Audio on</span></button>
+  </div>
+  <div id="palette" class="panel panel-palette"></div>
+</footer>
+
+<div id="toasts" class="toasts"></div>
+
+<div id="stats" class="stats mono hidden"></div>
+
+<script type="module" src="/src/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,15 @@
+# Dependencies — reinstallable from package-lock.json.
+node_modules/
+
+# World state, its backups, and captured frames.
+#
+# Ignored rather than committed: bots build continuously, so data/world.json
+# changes while the server is merely running, and data/captures/ is a per-frame
+# diagnostic trail (canvas.toDataURL dumps written through POST /__capture).
+# Committing either would leave the tree dirty within minutes of starting the
+# game, which is exactly the state that makes a commit mean nothing.
+data/
+
+# Server logs, redirected by the startup command into the temp directory but
+# written here if PORT/SWB_CAPTURE are set by hand.
+*.log

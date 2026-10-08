@@ -1,0 +1,570 @@
+:root {
+  --bg: #05070f;
+  --panel: rgba(13, 19, 34, 0.72);
+  --panel-solid: #0d1322;
+  --stroke: rgba(148, 176, 214, 0.14);
+  --stroke-strong: rgba(148, 176, 214, 0.28);
+  --text: #dce6f5;
+  --dim: #7f90ab;
+  --cyan: #38bdf8;
+  --indigo: #818cf8;
+  --emerald: #34d399;
+  --rose: #fb7185;
+  --amber: #fbbf24;
+  --radius: 14px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font-family: Inter, system-ui, sans-serif;
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+}
+
+body.no-select { user-select: none; }
+.mono { font-family: 'JetBrains Mono', ui-monospace, monospace; }
+.dim { color: var(--dim); }
+.hidden { display: none !important; }
+
+#viewport { position: fixed; inset: 0; }
+#viewport canvas { display: block; width: 100%; height: 100%; }
+
+/* ---------------------------------------------------------------- boot -- */
+
+.boot {
+  position: fixed; inset: 0; z-index: 100;
+  display: grid; place-items: center;
+  background: radial-gradient(1200px 600px at 50% 40%, #0d1830 0%, #05070f 70%);
+  transition: opacity .5s ease, visibility .5s;
+}
+.boot.gone { opacity: 0; visibility: hidden; }
+.boot-card { text-align: center; width: 340px; }
+.boot-mark {
+  width: 58px; height: 58px; margin: 0 auto 18px;
+  display: grid; place-items: center;
+  border-radius: 16px; font-size: 26px; color: #04121c;
+  background: linear-gradient(135deg, var(--cyan), var(--indigo));
+  box-shadow: 0 12px 40px rgba(56, 189, 248, .28);
+}
+.boot-card h1 { font-size: 17px; letter-spacing: .14em; margin: 0 0 6px; font-weight: 700; }
+.boot-card p { color: var(--dim); margin: 0 0 18px; font-size: 12px; min-height: 18px; }
+.boot-card p.error { color: var(--rose); line-height: 1.6; }
+.boot-bar { height: 3px; border-radius: 2px; background: rgba(255,255,255,.07); overflow: hidden; }
+#boot-bar-fill {
+  height: 100%; width: 0%;
+  background: linear-gradient(90deg, var(--cyan), var(--indigo));
+  transition: width .3s ease;
+}
+
+/* ----------------------------------------------------------------- hud -- */
+
+.hud { position: fixed; z-index: 10; pointer-events: none; }
+.hud > *, .hud button, .hud .panel { pointer-events: auto; }
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--stroke);
+  border-radius: var(--radius);
+  backdrop-filter: blur(14px) saturate(140%);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
+  box-shadow: 0 18px 44px rgba(0, 0, 0, .45);
+}
+
+.panel-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 9px 12px;
+  font-size: 10px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase;
+  color: var(--dim);
+  border-bottom: 1px solid var(--stroke);
+}
+
+.hud-top {
+  top: 14px; left: 14px; right: 14px;
+  display: flex; gap: 12px; align-items: flex-start; justify-content: space-between;
+}
+.panel-title { display: flex; gap: 11px; align-items: center; padding: 10px 14px; }
+.mark {
+  width: 36px; height: 36px; display: grid; place-items: center;
+  border-radius: 11px; color: #04121c; font-size: 17px;
+  background: linear-gradient(135deg, var(--cyan), var(--indigo));
+}
+.title-text h1 { margin: 0; font-size: 12px; font-weight: 700; letter-spacing: .08em; display: flex; align-items: center; gap: 8px; }
+.title-text p { margin: 3px 0 0; font-size: 10.5px; color: var(--dim); }
+.title-text b { color: var(--cyan); font-weight: 500; }
+.tag {
+  font-size: 9px; letter-spacing: .06em; padding: 2px 6px; border-radius: 999px;
+  background: rgba(56,189,248,.14); color: var(--cyan); border: 1px solid rgba(56,189,248,.3);
+}
+
+.panel-net { display: flex; align-items: center; gap: 10px; padding: 9px 12px; font-size: 11px; }
+.net-item { display: flex; align-items: center; gap: 6px; color: var(--dim); }
+.net-item b { color: var(--text); font-weight: 500; }
+.sep { width: 1px; height: 16px; background: var(--stroke); }
+.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--amber); }
+.dot.on { background: var(--emerald); box-shadow: 0 0 0 0 rgba(52,211,153,.6); animation: ping 2s infinite; }
+.dot.off { background: var(--rose); }
+@keyframes ping {
+  0% { box-shadow: 0 0 0 0 rgba(52,211,153,.55); }
+  70% { box-shadow: 0 0 0 7px rgba(52,211,153,0); }
+  100% { box-shadow: 0 0 0 0 rgba(52,211,153,0); }
+}
+
+.btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 11px; border-radius: 9px; cursor: pointer;
+  font: inherit; font-size: 11px; font-weight: 600;
+  background: rgba(255,255,255,.05); color: var(--text);
+  border: 1px solid var(--stroke-strong);
+  transition: background .16s, transform .08s, border-color .16s;
+}
+.btn:hover { background: rgba(255,255,255,.1); }
+.btn:active { transform: scale(.96); }
+.btn-danger { background: rgba(251,113,133,.14); border-color: rgba(251,113,133,.36); color: #fecdd3; }
+.btn-danger:hover { background: rgba(251,113,133,.24); }
+.btn-indigo { background: rgba(129,140,248,.14); border-color: rgba(129,140,248,.36); color: #c7d2fe; }
+.btn-indigo:hover { background: rgba(129,140,248,.24); }
+.btn-ghost { background: transparent; }
+
+/* --------------------------------------------------------------- rails -- */
+
+.hud-left {
+  /* Offsets are measured, not guessed. The top bar is 74px tall starting 10px
+     down, so it ends at 84 -- `top: 66` overlapped it by 18px. The footer is 91px
+     tall sitting 14px off the bottom, so it starts at 477 -- `bottom: 96`
+     overlapped it by 9px, and 116 clears it.
+
+     `overflow-y: auto` is the real safety net: at some viewport heights four
+     stacked panels genuinely do not fit, and scrolling degrades gracefully where
+     absolute positioning would just overlap. */
+  left: 12px; top: 92px; bottom: 116px; width: 196px;
+  display: flex; flex-direction: column; gap: 7px;
+  overflow-y: auto; overscroll-behavior: contain;
+}
+/* The rails were sized for a 2560px-wide desktop. On the ~800px viewport the game
+   actually gets run at, the two panels together covered roughly a third of the
+   screen -- which costs the render more than any shader effect here could win
+   back. Narrower, tighter, and the panels stop dominating the composition. */
+/* Same measured top as the left rail: 84 is where the top bar ends. */
+.hud-right {
+  right: 12px; top: 92px; width: 172px;
+  display: flex; flex-direction: column; gap: 7px;
+  max-height: calc(100vh - 92px - 24px);
+  overflow-y: auto; overscroll-behavior: contain;
+}
+.panel-grow { flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+
+.list { display: flex; flex-direction: column; gap: 5px; padding: 8px; max-height: 168px; overflow-y: auto; }
+.builder {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 8px; border-radius: 9px;
+  background: rgba(255,255,255,.035);
+  font-size: 11px;
+}
+.builder .swatch { width: 8px; height: 8px; border-radius: 50%; flex: none; box-shadow: 0 0 8px currentColor; }
+.builder .who { font-weight: 600; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.builder .state { font-size: 9.5px; color: var(--dim); letter-spacing: .04em; }
+.builder.me { background: rgba(56,189,248,.1); box-shadow: inset 0 0 0 1px rgba(56,189,248,.24); }
+.builder .state.bot { color: var(--indigo); }
+
+.log { flex: 1; overflow-y: auto; padding: 8px 10px; font-size: 10px; line-height: 1.55; display: flex; flex-direction: column; gap: 3px; }
+.log div { color: var(--dim); word-break: break-word; }
+.log time { color: #4a5670; margin-right: 5px; }
+.log .ok { color: var(--emerald); }
+.log .you { color: var(--cyan); }
+.log .warn { color: var(--amber); }
+.log .bad { color: var(--rose); }
+.log .remote { color: var(--indigo); }
+
+.passes { padding: 8px 10px; font-size: 10px; display: flex; flex-direction: column; gap: 2px; }
+.passes .p { display: flex; justify-content: space-between; color: var(--dim); }
+.passes .p b { font-weight: 500; color: var(--text); }
+.passes .p.off { opacity: .38; }
+
+.keys { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; margin: 0; padding: 9px 12px; font-size: 10.5px; }
+.keys dt { color: var(--text); font-family: 'JetBrains Mono', monospace; font-size: 9.5px; }
+.keys dd { margin: 0; color: var(--dim); }
+
+/* -------------------------------------------------------------- bottom -- */
+
+.hud-bottom {
+  left: 50%; bottom: 14px; transform: translateX(-50%);
+  display: flex; flex-direction: column; align-items: center; gap: 9px;
+  max-width: min(92vw, 860px);
+}
+.panel-tools { display: flex; align-items: center; gap: 7px; padding: 7px 9px; }
+.tool {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 7px 13px; border-radius: 9px; cursor: pointer;
+  font: inherit; font-size: 11.5px; font-weight: 600;
+  background: transparent; color: var(--dim); border: 1px solid transparent;
+  transition: background .16s, color .16s, transform .08s;
+}
+.tool:hover { background: rgba(255,255,255,.06); color: var(--text); }
+.tool:active { transform: scale(.96); }
+.tool.active { background: linear-gradient(135deg, var(--cyan), #22d3ee); color: #04121c; }
+.tool-danger:hover { background: rgba(251,113,133,.16); color: #fecdd3; }
+.tool-danger.active { background: linear-gradient(135deg, var(--rose), #f43f5e); color: #2b0510; }
+
+.panel-palette {
+  display: flex; gap: 6px; padding: 8px; overflow-x: auto;
+  max-width: 100%; scrollbar-width: thin;
+}
+
+/* The swatch palette.
+ *
+ * The buttons come out of the DOM as `<button class="swatch-btn" style="--c:#hex">`,
+ * but no rule named `.swatch-btn` existed -- so they rendered as default unstyled
+ * buttons, i.e. a row of white dashes under the toolbar, and the player had no idea
+ * which block they were placing or that a choice was possible at all. The colour now
+ * comes from the inline `--c` the renderer already sets, with a clear selected ring,
+ * and an icon variant for the Decor props palette.
+ */
+.swatch-btn {
+  width: 30px; height: 30px; flex: none;
+  border-radius: 10px; cursor: pointer;
+  border: 1px solid var(--stroke);
+  background: var(--c, rgba(255,255,255,.06));
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,.25);
+  transition: transform .08s ease, border-color .12s ease, box-shadow .12s ease;
+}
+.swatch-btn:hover { transform: translateY(-1px); border-color: var(--stroke-strong); }
+.swatch-btn:active { transform: translateY(0); }
+.swatch-btn.active {
+  border-color: var(--cyan);
+  box-shadow: 0 0 0 2px rgba(56,189,248,.5), inset 0 0 0 1px rgba(0,0,0,.25);
+}
+/* Emissive blocks get a faint halo so they read as "lit" in the picker. */
+.swatch-btn.glow { box-shadow: 0 0 8px 1px rgba(52,211,153,.55), inset 0 0 0 1px rgba(0,0,0,.25); }
+.swatch-btn.glow.active { box-shadow: 0 0 0 2px rgba(56,189,248,.5), 0 0 8px 1px rgba(52,211,153,.55); }
+/* Decor props use a Font Awesome glyph rather than a colour square. */
+.swatch-btn.icon {
+  background: rgba(255,255,255,.04); color: var(--dim);
+  display: grid; place-items: center;
+}
+.swatch-btn.icon:hover { color: var(--text); }
+.swatch-btn.icon.active { color: var(--cyan); }
+.slot {
+  display: flex; align-items: center; gap: 7px; flex: none;
+  padding: 7px 11px; border-radius: 10px; cursor: pointer;
+  font: inherit; font-size: 11px; font-weight: 600;
+  background: rgba(255,255,255,.04); color: var(--dim);
+  border: 1px solid var(--stroke);
+  transition: background .14s, color .14s, border-color .14s, transform .08s;
+}
+.slot:hover { background: rgba(255,255,255,.09); color: var(--text); }
+.slot:active { transform: scale(.95); }
+.slot.active { background: rgba(56,189,248,.16); border-color: rgba(56,189,248,.5); color: #bae6fd; }
+.slot .sw { width: 15px; height: 15px; border-radius: 5px; border: 1px solid rgba(255,255,255,.22); flex: none; }
+.slot .glow { width: 15px; height: 15px; border-radius: 5%; box-shadow: 0 0 12px 1px currentColor; flex: none; }
+
+/* -------------------------------------------------------------- toasts -- */
+
+.toasts {
+  position: fixed; top: 78px; right: 14px; z-index: 30;
+  display: flex; flex-direction: column; gap: 7px; align-items: flex-end;
+  pointer-events: none;
+}
+.toast {
+  display: flex; align-items: center; gap: 9px;
+  padding: 9px 13px; border-radius: 11px; max-width: 320px;
+  background: var(--panel); border: 1px solid var(--stroke);
+  backdrop-filter: blur(12px);
+  box-shadow: 0 14px 34px rgba(0,0,0,.5);
+  font-size: 11.5px; font-weight: 500;
+  animation: slidein .3s cubic-bezier(.2,.9,.3,1);
+}
+.toast.out { animation: slideout .3s ease forwards; }
+.toast i { flex: none; }
+.toast.ok { border-color: rgba(52,211,153,.4); color: #a7f3d0; }
+.toast.bad { border-color: rgba(251,113,133,.45); color: #fecdd3; }
+.toast.warn { border-color: rgba(251,191,36,.4); color: #fde68a; }
+.toast.info { border-color: rgba(56,189,248,.36); color: #bae6fd; }
+@keyframes slidein { from { opacity: 0; transform: translateX(26px); } to { opacity: 1; transform: none; } }
+@keyframes slideout { to { opacity: 0; transform: translateX(26px); } }
+
+/* --------------------------------------------------------------- stats -- */
+
+.stats {
+  position: fixed; left: 14px; bottom: 14px; z-index: 20;
+  padding: 10px 12px; border-radius: 12px; max-height: 62vh; overflow: auto;
+  background: var(--panel); border: 1px solid var(--stroke);
+  backdrop-filter: blur(12px);
+  font-size: 10px; line-height: 1.6; color: var(--dim); white-space: pre;
+}
+.stats b { color: var(--text); font-weight: 500; }
+
+/* scrollbars */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(148,176,214,.22); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(148,176,214,.4); }
+
+/* --- objectives --------------------------------------------------------- */
+/* The right rail is 208px wide, so the panel is built for that: no fixed heights,
+   and the brief is clamped so a long description cannot push the Controls panel
+   off screen on a short viewport. */
+.panel-objective { padding-bottom: 10px; }
+.objectives { padding: 0 11px; }
+
+.obj-rail { display: flex; gap: 3px; padding: 2px 0 9px; }
+.obj-rail .pip {
+  flex: 1; height: 3px; border-radius: 2px;
+  background: rgba(148,176,214,.16);
+}
+.obj-rail .pip.done { background: rgba(52,211,153,.75); }
+.obj-rail .pip.active {
+  background: rgba(251,191,36,.85);
+  /* A slow pulse so the current goal is findable in peripheral vision. */
+  animation: objpulse 2.4s ease-in-out infinite;
+}
+@keyframes objpulse { 0%,100% { opacity: .55; } 50% { opacity: 1; } }
+
+.obj-card h3 {
+  margin: 2px 0 4px; font-size: 12px; font-weight: 700;
+  letter-spacing: .01em; color: var(--text);
+}
+.obj-card p {
+  margin: 0 0 8px; font-size: 10.5px; line-height: 1.5; color: var(--dim);
+  display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.obj-kicker {
+  font-size: 9px; font-weight: 600; letter-spacing: .09em;
+  text-transform: uppercase; color: rgba(251,191,36,.8);
+}
+.obj-card.done .obj-kicker { color: rgba(52,211,153,.85); }
+
+.obj-bar {
+  height: 5px; border-radius: 3px; overflow: hidden;
+  background: rgba(148,176,214,.14);
+}
+.obj-bar > i {
+  display: block; height: 100%; border-radius: 3px;
+  background: linear-gradient(90deg, #fbbf24, #f59e0b);
+  transition: width .45s cubic-bezier(.2,.8,.3,1);
+}
+.obj-count {
+  margin-top: 4px; font-size: 10px; font-family: var(--mono);
+  color: var(--text); text-align: right;
+}
+.obj-reward {
+  margin-top: 5px; font-size: 9.5px; line-height: 1.4;
+  color: rgba(167,243,208,.8); font-style: italic;
+}
+
+.obj-done { list-style: none; margin: 8px 0 0; padding: 7px 0 0; font-size: 9.5px; }
+.obj-done li {
+  display: flex; gap: 5px; align-items: baseline;
+  color: var(--dim); padding: 1.5px 0;
+}
+.obj-done .tick { color: rgba(52,211,153,.85); font-size: 9px; }
+
+/* Completion banner: centre-top so it interrupts without covering the world. */
+.obj-banner {
+  position: fixed; left: 50%; top: 96px; z-index: 60;
+  transform: translate(-50%, -14px);
+  padding: 13px 26px; border-radius: 14px; text-align: center;
+  background: linear-gradient(180deg, rgba(23,32,48,.96), rgba(15,22,35,.96));
+  border: 1px solid rgba(52,211,153,.42);
+  box-shadow: 0 14px 42px rgba(0,0,0,.5), 0 0 0 1px rgba(255,255,255,.03) inset;
+  backdrop-filter: blur(14px);
+  opacity: 0; pointer-events: none;
+  transition: opacity .35s ease, transform .35s cubic-bezier(.2,.9,.3,1);
+}
+.obj-banner.show { opacity: 1; transform: translate(-50%, 0); }
+.obj-banner-kicker {
+  font-size: 9px; font-weight: 700; letter-spacing: .14em;
+  text-transform: uppercase; color: rgba(52,211,153,.9);
+}
+.obj-banner-title {
+  margin-top: 3px; font-size: 17px; font-weight: 800;
+  letter-spacing: -.01em; color: #ecfdf5;
+}
+.obj-banner-reward {
+  margin-top: 3px; font-size: 11px; font-style: italic;
+  color: rgba(167,243,208,.85);
+}
+
+@media (max-width: 1080px) {
+  .hud-right { display: none; }
+  .hud-left { width: 214px; }
+}
+@media (max-width: 760px) {
+  .hud-left { display: none; }
+  .panel-net .net-item:nth-child(n+3) { display: none; }
+}
+.hud-left, .hud-right { font-size: 10px; }
+.panel-head { padding: 6px 9px; font-size: 9px; }
+.log { padding: 5px 7px; font-size: 9px; line-height: 1.45; }
+.log .row { padding: 1px 0; }
+.passes { padding: 6px 9px; font-size: 9px; line-height: 1.5; }
+.keys { padding: 6px 9px; font-size: 9.5px; }
+.builder { padding: 3px 8px; font-size: 10px; }
+.builder .state { font-size: 8.5px; }
+.title-text h1 { font-size: 11px; }
+.title-text p { font-size: 9px; }
+.panel-net { font-size: 10px; padding: 7px 10px; }
+.hud-top { padding: 6px 8px; }
+/* --- minimap ------------------------------------------------------------ */
+/* A panel in the left rail. See index.html for the three placements that failed
+   before this one, and why each was worse. */
+.panel-map { flex: none; }
+.minimap-host { padding: 0 9px 9px; }
+.minimap {
+  position: relative;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #080b12;
+  border: 1px solid var(--stroke);
+}
+.minimap-canvas {
+  display: block;
+  width: 100%; max-width: 150px;
+  aspect-ratio: 1; height: auto;
+  margin: 0 auto;
+  cursor: crosshair;
+  /* Backing store is 168px, shown at up to 150, so this is a downscale. Smooth is
+     right here: `pixelated` produces uneven edges that read as noise. */
+  image-rendering: auto;
+}
+.minimap-label {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  padding: 3px 0;
+  font-size: 8.5px; text-align: center; letter-spacing: .06em;
+  color: var(--dim);
+  background: linear-gradient(180deg, rgba(8,11,18,0), rgba(8,11,18,.94) 45%);
+  pointer-events: none;
+}
+/* Below this the rail cannot hold the map and the log. */
+@media (max-width: 760px) { .panel-map { display: none; } }
+
+/* Pipeline pass list, now inside the F-key overlay. */
+.stats-passes {
+  margin-top: 8px; padding-top: 7px;
+  border-top: 1px solid var(--stroke);
+  word-break: break-word;
+}
+/* Builder roster rows */
+.list .row { display: flex; align-items: baseline; gap: 6px; padding: 2.5px 0; }
+.list .bot-body { display: flex; align-items: baseline; gap: 4px; flex-wrap: wrap; min-width: 0; }
+/* What a bot is doing, from the objective it derives its intent from. Kept dim so
+   it reads as annotation under the name rather than as the primary content. */
+.list .bot-intent {
+  font-size: 9px; color: rgba(148,176,214,.72); font-style: italic;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;
+}
+.obj-card.waiting { }
+.obj-card.waiting .obj-bar > i {
+  /* Pulsing rather than solid: the bar is full but the objective is not complete,
+     and stillness would read as "broken" rather than "waiting on you". */
+  animation: objhold 1.6s ease-in-out infinite;
+}
+@keyframes objhold { 0%,100% { opacity: .45; } 50% { opacity: 1; } }
+.obj-hold {
+  margin-top: 6px; padding: 5px 7px; border-radius: 7px;
+  font-size: 9.5px; line-height: 1.4;
+  color: #fde68a; background: rgba(251,191,36,.1);
+  border: 1px solid rgba(251,191,36,.3);
+}
+
+/* --- territory panel -------------------------------------------------------
+   Sits below Controls in the left rail. The bar is the only thing that changes
+   between broadcasts, so it is the only thing that repaints. */
+.panel-claim { padding: 8px 10px 10px; }
+#claim .claim-head {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
+}
+.claim-label {
+  font-size: 10px; letter-spacing: .07em; text-transform: uppercase;
+  color: rgba(148,176,214,.72);
+}
+/* Held ground is the good state and is deliberately calm rather than loud, so a
+   claim that needs attention stands out by contrast. */
+.claim-state {
+  font-size: 11px; font-weight: 600; color: #7dd3fc;
+  font-variant-numeric: tabular-nums;
+}
+.claim-state.fading { color: #fbbf24; }
+#claim .claim-bar {
+  margin: 5px 0 5px; height: 3px; border-radius: 2px; overflow: hidden;
+  background: rgba(148,176,214,.16);
+}
+#claim .claim-bar > i {
+  display: block; height: 100%; width: 0;
+  background: linear-gradient(90deg, #38bdf8, #818cf8);
+  transition: width .5s linear;
+}
+/* Amber plus a pulse: two channels, because colour alone is not available to
+   everyone and the state must be readable regardless. */
+#claim .claim-bar > i.fading {
+  background: #fbbf24;
+  animation: claimpulse 1.4s ease-in-out infinite;
+}
+@keyframes claimpulse { 0%,100% { opacity: .5; } 50% { opacity: 1; } }
+.claim-note {
+  font-size: 9.5px; line-height: 1.45; color: rgba(148,176,214,.8);
+}
+.claim-note kbd {
+  font-size: 9px; padding: 0 3px; border-radius: 3px;
+  background: rgba(148,176,214,.16); color: #cbd5e1;
+}
+
+/* The claim button reads as held while you own ground, so the state is visible on
+   the button and not only in the panel. */
+#btn-claim.is-held {
+  border-color: rgba(56,189,248,.55);
+  color: #7dd3fc;
+  background: rgba(56,189,248,.1);
+}
+
+/* --- first-run coach ------------------------------------------------------
+   Bottom-centre, above the palette, because the first instruction is "click the
+   ground" and anything that covers the ground defeats it. Deliberately not a
+   modal: a player who ignores this can still build, and the coach simply never
+   returns. */
+.coach {
+  position: absolute;
+  left: 50%;
+  /* Top of the viewport, not the bottom.
+     Measured: at the bottom it covered the exact centre of the screen -- which is
+     where a player's cursor is by default and where they are told to click. An
+     instruction to click the ground that sits on top of the ground is worse than no
+     instruction, and it would swallow the first click as well as hide the target.
+     Up here it is clear of the sky, the horizon, both HUD rails and the palette. */
+  top: 14px;
+  transform: translateX(-50%);
+  z-index: 40;
+  max-width: 400px;
+  padding: 10px 15px 11px;
+  border-radius: 12px;
+  background: rgba(11,17,32,.94);
+  border: 1px solid rgba(56,189,248,.34);
+  box-shadow: 0 12px 34px rgba(0,0,0,.5);
+  text-align: center;
+  /* Fades rather than vanishing: a tutorial that blinks out mid-sentence reads
+     as a glitch. */
+  transition: opacity .3s ease, transform .3s ease;
+}
+.coach.gone { opacity: 0; pointer-events: none; transform: translateX(-50%) translateY(-8px); }
+.coach-step {
+  font-size: 9px; letter-spacing: .11em; text-transform: uppercase;
+  color: #7dd3fc; margin-bottom: 4px;
+}
+.coach-body {
+  font-size: 13px; line-height: 1.5; color: #e2e8f0;
+}
+/* Quiet, so it reads as dismissible. The whole point is that ignoring it is a
+   legitimate choice. */
+.coach-skip {
+  margin-top: 7px;
+  font-size: 10px; color: rgba(148,176,214,.7);
+  background: none; border: none; cursor: pointer;
+  padding: 2px 6px; border-radius: 5px;
+}
+.coach-skip:hover { color: #cbd5e1; background: rgba(148,176,214,.12); }
