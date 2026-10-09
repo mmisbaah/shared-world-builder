@@ -79,9 +79,13 @@ export function playEvents(events, deps) {
 
       case 'accepted': {
         // opType distinguishes a block from a prop. Both arrive with no material,
-        // so without it a lantern and a cube would make the same sound.
-        const kind = ev.opType === OP.PLACE_PROP ? 'prop' : 'place';
-        if (play(editSound(kind, true), {
+        // so without it a lantern and a cube would make the same sound. An undo
+        // gets a voice of its own rather than borrowing a placement's: it is the
+        // reverse of one, and hearing "a block landed" when one was taken back is
+        // hearing the wrong event.
+        const name = ev.opType === OP.UNDO ? SFX.UNDO
+          : editSound(ev.opType === OP.PLACE_PROP ? 'prop' : 'place', true);
+        if (play(name, {
           x: ev.x, y: ev.y, z: ev.z, mat: ev.mat,
         }, 'self')) {
           tally.sounded++;
@@ -93,6 +97,10 @@ export function playEvents(events, deps) {
       case 'denied': {
         log?.(`op ${ev.opId} denied: ${ev.reason}`, ev.conflict ? 'bad' : 'warn');
         if (ev.conflict) toast?.(`${ev.winner?.name} beat you to it`, 'bad');
+        // A refusal nobody is shown is indistinguishable from a broken button.
+        // Undo denials carry no voxel, so they play unpositioned -- `play`
+        // skips spatialisation entirely when `x` is not finite.
+        if (ev.opType === OP.UNDO) toast?.(ev.reason || 'nothing to undo', 'warn');
         if (play(ev.conflict ? SFX.CONFLICT : SFX.DENY, {
           x: ev.x, y: ev.y, z: ev.z,
         }, 'self')) {

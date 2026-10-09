@@ -187,9 +187,28 @@ export const OP = {
   RELEASE_LOCK: 7,
   PING: 8,
   RELEASE_ZONE: 9,
+  /**
+   * Revert this builder's own most recent edit.
+   *
+   * Carries no coordinates on purpose: the server owns the stack, so a client
+   * naming a voxel would only give it a say in *which* of its own edits gets
+   * reverted -- and the revision guard is there to refuse when the world has
+   * moved on. Nothing here can reach an edit the sender did not make.
+   */
+  UNDO: 10,
 };
 
 export const OP_NAME = Object.fromEntries(Object.entries(OP).map(([k, v]) => [v, k]));
+
+/**
+ * How many of a builder's own edits stay revertible.
+ *
+ * Declared here rather than beside the stack it caps, because both ends need
+ * it: the server trims to this depth and the client caps its own count at it.
+ * Keeping the number in one place is what stops the client insisting there is
+ * history to undo when the server has already trimmed past it.
+ */
+export const UNDO_DEPTH = 16;
 
 // ---------------------------------------------------------------------------
 // Rejection reasons (server -> client)

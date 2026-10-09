@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { Authority } from '../server/authority.js';
 import {
   OP, DENY, voxelKey, WORLD, COLUMN_VOLUME, CHUNK_AREA, voxelIndex,
-  encodeCells, decodeCells,
+  encodeCells, decodeCells, UNDO_DEPTH,
 } from '../shared/protocol.js';
 
 function makeWorld() {
@@ -220,4 +220,190 @@ test('a column holds CHUNK_AREA * WORLD.MAX_Y voxels, not a cube', () => {
   const last = voxelIndex(15, WORLD.MAX_Y - 1, 15);
   assert.equal(last, COLUMN_VOLUME - 1, 'top voxel must land on the final index');
   assert.ok(last < c.cells.length, 'final voxel must be inside the buffer');
+});
+
+// ---------------------------------------------------------------------------
+// Undo
+// ---------------------------------------------------------------------------
+//
+// The property that matters is not "can a placement be reverted" but "can a
+// placement be reverted without touching anyone else's work". This is a shared
+// world: a client-side undo would be a client deciding to write an old value
+// over a voxel it may no longer own, which is exactly the forgery this server
+// is built to refuse. So the stack is the server's, keyed by builder, and the
+// revision guard is what stops an undo from discarding somebody newer.
+
+test('undo reverts your own last placement', () => {
+  const a = makeWorld();
+  a.apply({ id: ++seq, t: OP.PLACE_BLOCK, x: 0, y: 1, z: 0, mat: 1 }, ME);
+  assert.equal(a.getBlock(0, 1, 0), 1);
+
+  const r = a.apply({ id: ++seq, t: OP.UNDO }, ME);
+  assert.ok(r.ok, `undo must be accepted: ${r.reason}`);
+  assert.equal(a.getBlock(0, 1, 0), 0, 'the placement is taken back');
+  assert.deepEqual([r.result.x, r.result.y, r.result.z], [0, 1, 0],
+    'the ack names the voxel so the sound can be spatialised');
+  assert.equal(r.result.mat, 0);
+});
+
+test('undo puts back the block a removal lifted', () => {
+  const a = makeWorld();
+  a.apply({ id: ++seq, t: OP.PLACE_BLOCK, x: 2, y: 3, z: 1, mat: 6 }, ME);
+  a.apply({ id: ++seq, t: OP.REMOVE_BLOCK, x: 2, y: 3, z: 1 }, ME);
+  assert.equal(a.getBlock(2, 3, 1), 0);
+
+  const r = a.apply({ id: ++seq, t: OP.UNDO }, ME);
+  assert.ok(r.ok, `undo must be accepted: ${r.reason}`);
+  assert.equal(a.getBlock(2, 3, 1), 6, 'the original material comes back, not a guess');
+  assert.equal(r.result.mat, 6);
+});
+
+test('repeated undo walks back through edits instead of toggling', () => {
+  // The failure this exists for: if an undo recorded what it overwrote, the
+  // second press would revert the revert, and the player would stand in place
+  // flipping one block while believing they were rewinding.
+  const a = makeWorld();
+  a.apply({ id: ++seq, t: OP.PLACE_BLOCK, x: 0, y: 1, z: 0, mat: 1 }, ME);
+  a.apply({ id: ++seq, t: OP.PLACE_BLOCK, x: 1, y: 1, z: 0, mat: 3 }, ME);
+  a.apply({ id: ++seq, t: OP.PLACE_BLOCK, x: 2, y: 1, z: 0, mat: 6 }, ME);
+
+  assert.ok(a.apply({ id: ++seq, t: OP.UNDO }, ME).ok);
+  assert.equal(a.getBlock(2, 1, 0), 0, 'the newest goes first');
+  assert.equal(a.getBlock(1, 1, 0), 3, 'and the others are left alone');
+
+  assert.ok(a.apply({ id: ++seq, t: OP.UNDO }, ME).ok, 'the second press moves on');
+  assert.equal(a.getBlock(1, 1, 0), 0);
+  assert.equal(a.getBlock(0, 1, 0), 1, 'rather than coming back around to the first');
+
+  assert.ok(a.apply({ id: ++seq, t: OP.UNDO }, ME).ok);
+  assert.equal(a.getBlock(0, 1, 0), 0);
+  assert.equal(a.apply({ id: ++seq, t: OP.UNDO }, ME).deny, DENY.EMPTY, 'and now spent');
+});
+
+test('two edits to one voxel can both be walked back', () => {
+  // The second entry guards on a revision the first undo has already moved. If
+  // that were left stale, the second press would refuse over a change the player
+  // themselves made a moment earlier.
+  const a = makeWorld();
+  a.apply({ id: ++seq, t: OP.PLACE_BLOCK, x: 3, y: 2, z: 3, mat: 1 }, ME);
+  a.apply({ id: ++seq, t: OP.REMOVE_BLOCK, x: 3, y: 2, z: 3 }, ME);
+  assert.equal(a.getBlock(3, 2, 3), 0);
+
+  assert.ok(a.apply({ id: ++seq, t: OP.UNDO }, ME).ok, 'the removal is undone');
+  assert.equal(a.getBlock(3, 2, 3), 1);
+
+  const again = a.apply({ id: ++seq, t: OP.UNDO }, ME);
+  assert.ok(again.ok, `the placement behind it must still be reachable: ${again.reason}`);
+  assert.equal(a.getBlock(3, 2, 3), 0);
+});
+
+test('undo cannot discard a newer edit by another builder', () => {
+  // The case that justifies undo living on the server at all. Reverting my
+  // placement here would write air over their gold block.
+  const a = makeWorld();
+  a.apply({ id: ++seq, t: OP.PLACE_BLOCK, x: 4, y: 2, z: 4, mat: 1 }, ME);
+  a.apply({ id: ++seq, t: OP.REMOVE_BLOCK, x: 4, y: 2, z: 4, rev: a.getRevision(4, 2, 4) }, THEM);
+  a.apply({ id: ++seq, t: OP.PLACE_BLOCK, x: 4, y: 2, z: 4, mat: 5 }, THEM);
+
+  const r = a.apply({ id: ++seq, t: OP.UNDO }, ME);
+  assert.equal(r.ok, false, 'refused, because the voxel is no longer mine to set');
+  assert.equal(r.deny, DENY.OCCUPIED);
+  assert.equal(a.getBlock(4, 2, 4), 5, 'their block survives');
+});
+
+test('undo never reaches an edit the caller did not make', () => {
+  const a = makeWorld();
+  a.apply({ id: ++seq, t: OP.PLACE_BLOCK, x: 0, y: 1, z: 0, mat: 1 }, THEM);
+
+  const r = a.apply({ id: ++seq, t: OP.UNDO }, ME);
+  assert.equal(r.ok, false);
+  assert.equal(r.deny, DENY.EMPTY, 'ME has no history of their own to spend');
+  assert.equal(a.getBlock(0, 1, 0), 1, 'their block is untouched');
+  // The request carries no coordinates, so there is no way to name one either.
+  assert.equal(a.undoStacks.get(THEM.id).length, 1, 'their own stack is intact');
+});
+
+test('a refusal spends the entry, so the stack cannot freeze behind it', () => {
+  const a = makeWorld();
+  a.apply({ id: ++seq, t: OP.PLACE_BLOCK, x: 0, y: 1, z: 0, mat: 1 }, ME);
+  a.apply({ id: ++seq, t: OP.PLACE_BLOCK, x: 1, y: 1, z: 0, mat: 1 }, ME);
+  // Somebody else takes the top entry's voxel out from under it.
+  a.apply({ id: ++seq, t: OP.REMOVE_BLOCK, x: 1, y: 1, z: 0, rev: a.getRevision(1, 1, 0) }, THEM);
+
+  assert.equal(a.apply({ id: ++seq, t: OP.UNDO }, ME).ok, false, 'top is unrevertible');
+
+  const next = a.apply({ id: ++seq, t: OP.UNDO }, ME);
+  assert.ok(next.ok, `the entry behind it must still be reachable: ${next.reason}`);
+  assert.equal(a.getBlock(0, 1, 0), 0);
+  assert.equal(a.getBlock(1, 1, 0), 0, 'the refused one was spent, not applied');
+});
+
+test('undo history is capped and drops the oldest edits first', () => {
+  const a = makeWorld();
+  const total = UNDO_DEPTH + 5;
+  for (let i = 0; i < total; i++) {
+    a.apply({ id: ++seq, t: OP.PLACE_BLOCK, x: i, y: 1, z: 0, mat: 1 }, ME);
+  }
+  assert.equal(a.undoStacks.get(ME.id).length, UNDO_DEPTH,
+    'the stack is bounded no matter how long the session runs');
+
+  for (let i = 0; i < UNDO_DEPTH; i++) {
+    assert.ok(a.apply({ id: ++seq, t: OP.UNDO }, ME).ok, `undo ${i}`);
+  }
+  assert.equal(a.apply({ id: ++seq, t: OP.UNDO }, ME).deny, DENY.EMPTY);
+
+  for (let i = 0; i < 5; i++) {
+    assert.equal(a.getBlock(i, 1, 0), 1, 'fell off the bottom and was never undone');
+  }
+  for (let i = 5; i < total; i++) {
+    assert.equal(a.getBlock(i, 1, 0), 0, 'undone');
+  }
+});
+
+test('undoing a prop placement takes the prop, not the ground it stood on', () => {
+  const a = makeWorld();
+  // Props need solid ground beneath them.
+  a.apply({ id: ++seq, t: OP.PLACE_BLOCK, x: 0, y: 0, z: 0, mat: 1 }, ME);
+  const key = voxelKey(0, 1, 0);
+
+  const put = a.apply({ id: ++seq, t: OP.PLACE_PROP, x: 0, y: 1, z: 0, prop: 'lantern', rot: 3 }, ME);
+  assert.ok(put.ok, put.reason);
+  assert.equal(a.chunk(0, 0).props.has(key), true);
+
+  const takenBack = a.apply({ id: ++seq, t: OP.UNDO }, ME);
+  assert.ok(takenBack.ok, `undoing a placement must work: ${takenBack.reason}`);
+  assert.equal(a.chunk(0, 0).props.has(key), false, 'the lantern is taken back');
+  assert.equal(a.getBlock(0, 0, 0), 1, 'the block it was standing on is untouched');
+});
+
+test('undoing a prop removal puts it back with its rotation', () => {
+  const a = makeWorld();
+  a.apply({ id: ++seq, t: OP.PLACE_BLOCK, x: 0, y: 0, z: 0, mat: 1 }, ME);
+  const key = voxelKey(0, 1, 0);
+  a.apply({ id: ++seq, t: OP.PLACE_PROP, x: 0, y: 1, z: 0, prop: 'chair', rot: 3 }, ME);
+  a.apply({ id: ++seq, t: OP.REMOVE_PROP, x: 0, y: 1, z: 0 }, ME);
+  assert.equal(a.chunk(0, 0).props.has(key), false);
+
+  const r = a.apply({ id: ++seq, t: OP.UNDO }, ME);
+  assert.ok(r.ok, `undoing a removal must work: ${r.reason}`);
+  const back = a.chunk(0, 0).props.get(key);
+  assert.equal(back.prop, 'chair');
+  assert.equal(back.rot, 3, 'orientation survives the round trip');
+  assert.equal(back.by, ME.id, 'and so does attribution');
+});
+
+test('undo cannot delete a prop somebody else put in the same spot', () => {
+  const a = makeWorld();
+  a.apply({ id: ++seq, t: OP.PLACE_BLOCK, x: 0, y: 0, z: 0, mat: 1 }, ME);
+  const key = voxelKey(0, 1, 0);
+  a.apply({ id: ++seq, t: OP.PLACE_PROP, x: 0, y: 1, z: 0, prop: 'lantern', rot: 0 }, ME);
+
+  // Mine comes out, theirs goes in.
+  a.apply({ id: ++seq, t: OP.REMOVE_PROP, x: 0, y: 1, z: 0 }, ME);
+  const theirs = a.apply({ id: ++seq, t: OP.PLACE_PROP, x: 0, y: 1, z: 0, prop: 'chair', rot: 1 }, THEM);
+  assert.ok(theirs.ok);
+
+  const r = a.apply({ id: ++seq, t: OP.UNDO }, ME);
+  assert.equal(r.ok, false, 'it is no longer my lantern');
+  assert.equal(a.chunk(0, 0).props.get(key).prop, 'chair', 'their chair stands');
 });

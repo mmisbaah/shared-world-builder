@@ -125,6 +125,14 @@ body.no-select { user-select: none; }
 }
 .btn:hover { background: rgba(255,255,255,.1); }
 .btn:active { transform: scale(.96); }
+/* "Nothing to undo" is the normal state at boot, so the control has to read as
+   unavailable rather than as a button that is about to work. */
+.btn:disabled {
+  opacity: .36; cursor: default;
+  background: rgba(255,255,255,.03);
+}
+.btn:disabled:hover { background: rgba(255,255,255,.03); }
+.btn:disabled:active { transform: none; }
 .btn-danger { background: rgba(251,113,133,.14); border-color: rgba(251,113,133,.36); color: #fecdd3; }
 .btn-danger:hover { background: rgba(251,113,133,.24); }
 .btn-indigo { background: rgba(129,140,248,.14); border-color: rgba(129,140,248,.36); color: #c7d2fe; }

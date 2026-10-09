@@ -705,6 +705,51 @@ fires on `garden` (`doneIdx 7 === campaign - 1`), it does not re-fire on
 `rolling_0` (`doneIdx 8`), and a client joining after the fact receives `null`
 and no celebration.
 
+## Undo: why the history lives on the server
+
+`Z` reverts the player's own last edits, up to 16 of them. The obvious
+implementation — keep a list on the client and write the old values back — is
+wrong for one reason: this is a shared world, and a voxel the client last saw
+minutes ago may now be somebody else's work.
+
+So the history belongs to the server, keyed by `actor.id`, and each entry holds
+only what an edit *overwrote* — the previous material, or the previous prop
+record. Undo is the one op in the protocol that carries **no coordinates**: a
+request that cannot name a voxel cannot name work the caller did not do.
+
+Three details are what make it usable rather than merely correct.
+
+**The guard is a revision comparison.** The entry stores the revision its own
+edit produced, and undo applies only while the voxel still reads that revision.
+That one check is what stops an undo discarding a teammate's newer work — the
+case where I place a block, they replace it with gold, and my `Z` would
+otherwise write air over it. The refusal is *popped* as well as reported:
+leaving a permanently failing entry on top would freeze every edit behind it.
+
+**Undo does not record what it overwrote.** It would be easy to do — the write
+path already computes it — and it would make undo undoable in the programming
+sense. It is also wrong for the player: after reverting the newest edit, the
+next press would revert the revert, and they would stand in place flipping one
+block over while believing they were rewinding. Walking back needs the stack to
+shrink, so it does. What that costs is `_refreshUndo`, which re-points deeper
+entries for the same voxel at the revision the undo just wrote; without it,
+editing one voxel twice would strand the earlier entry behind a number only the
+player's own undo could have caused, and the second press would refuse over a
+change they made themselves.
+
+**The client keeps a count, not a history.** It increments on acknowledgement
+only — a denied or timed-out op is never history to unwind — follows a refusal
+*down* because the entry was spent, and zeroes on `DENY.EMPTY`, the one denial
+where the local number is wrong rather than merely ahead of the server. Undo is
+also never predicted: that would mean teaching settle and reject about an op
+with no coordinates, and for one discrete press a single round trip is fine.
+The failure this avoids showed up in the first test run — a refusal left the
+count unchanged while the server had already popped, so the button went on
+promising an undo that no longer existed.
+
+`Z` and the footer **Undo** button both reach it; the button is disabled at zero
+rather than answering "nothing to undo" when pressed.
+
 ## Audio: procedural, and built around attribution
 
 There was no audio at all. It is now entirely synthesised — oscillators and one
@@ -1218,7 +1263,7 @@ Stated plainly rather than overclaimed:
 
 ## Tests
 
-477 tests, `node --test test/`, all passing. They cover the layers that are easy
+499 tests, `node --test test/`, all passing. They cover the layers that are easy
 to get subtly wrong:
 
 - `coach` (33) - every step's requirement being something the player can always do, ids matching what they wait for, no two consecutive steps sharing a signal, one step per pump rather than collapsing, per-step independence, clicks on a re-rendered panel, and persistence through an injected store
@@ -1240,11 +1285,14 @@ to get subtly wrong:
   so the completed ids it restored are still findable in the ladder they are
   rendered against
 
-- `audioEvents` (20) — the event-to-sound mapping: the double-strike guard that keeps
+- `audioEvents` (24) — the event-to-sound mapping: the double-strike guard that keeps
   one placement from sounding twice, block-versus-prop, bot intent announcements
   staying silent, a lost race sounding once, unknown event types not throwing inside
   the frame loop, and the attribution tally staying honest when the budget refuses a
-  sound
+  sound. Undo gets its own branch in both directions — a refusal is toasted with
+  the server's reason (because an undo that does not happen produces no delta and
+  no visible change, so the message *is* the feedback) and never a race toast,
+  which would name a voxel the request does not carry
 - `audio` (37) — material timbre driven off roughness, inverse-square falloff, voice
   budget cooldowns and release (including double-release), stereo pan clamping, a
   minute of realistic bot traffic staying inside the ceiling, and the ambient bed:
@@ -1257,7 +1305,7 @@ to get subtly wrong:
 - `minimap` (15) — the surface rule (topmost, not a slice), chunk-boundary
   indexing, predictions appearing immediately including predicted removals, the
   derived canvas size that prevents clipping the world edge, and scan idempotence
-- `shaders` (19) — static GLSL checks: no trailing commas, no uint/float mixing,
+- `shaders` (8) — static GLSL checks: no trailing commas, no uint/float mixing,
   no redefinition of three.js-provided names, GLSL3 declared on every material,
   `node --check` over the entire source tree, and a scope check that inline event
   handlers never call an identifier they cannot see (see below)
@@ -1265,9 +1313,9 @@ to get subtly wrong:
   or it renders nothing), the geometry merge contract, world-side prop storage, and
   the catalogue numbers that keep a prop placeable: unique names, a Font Awesome
   icon on every entry, and a light whose reach is larger than its own height
-- `greedyMesher` (17) — seam ownership, glass culling, AO, greedy invariants, and
+- `greedyMesher` (16) — seam ownership, glass culling, AO, greedy invariants, and
   full-height columns
-- `quadDiff` (18) — quad identity, subset extraction and its vertex/quad
+- `quadDiff` (26) — quad identity, subset extraction and its vertex/quad
   invariant, fx bytes, visibility partitioning
 - `world` (20) — prediction overlay, dirty propagation including **diagonal**
   neighbours at corners, and an apron/mesher stride-agreement check that asserts
@@ -1275,7 +1323,19 @@ to get subtly wrong:
 - `picking` (27) — DDA traversal, entry normals, zero-component rays, non-finite
   direction rejection, prop AABBs, placement always landing in air, and a prop hit
   carrying the face it was entered through rather than undefined
-- `connection` (43) — every reconciliation path, out-of-order answers, timeouts,
-  disconnects, snapshot round trip, probe/op id disjointness
-- `authority` (17) — races, optimistic concurrency, locks, zones, rate limiting,
-  full-height columns
+- `connection` (50) — every reconciliation path, out-of-order answers, timeouts,
+  disconnects, snapshot round trip, probe/op id disjointness, and the undo count
+  moving only on acknowledgement, following a refusal down (a refused entry is
+  spent), zeroing on an empty stack rather than decrementing, capping at the depth
+  the server actually keeps, and `_settle`/`_reject` ignoring an op that carries
+  no coordinates of its own
+- `authority` (28) — races, optimistic concurrency, locks, zones, rate limiting,
+  full-height columns, and undo: restoring a placement and a removal with the
+  material that was actually there, walking backward through successive edits
+  instead of toggling the newest one, two edits to one voxel both being reachable,
+  **undo being unable to discard a newer edit by another builder** (the case that
+  justifies keeping the history server-side at all), a stack so strictly per
+  builder that another builder's edit cannot be named even implicitly, a refusal
+  spending its entry so the stack cannot freeze behind it, the cap dropping the
+  oldest edits first, and props reverting in both directions with rotation and
+  attribution intact

@@ -35,6 +35,8 @@ export const SFX = {
   DENY: 'deny',
   /** I lost a race to another builder. Urgent, because it is a surprise. */
   CONFLICT: 'conflict',
+  /** An edit of mine was reverted. Descending, because it is an undo. */
+  UNDO: 'undo',
   /** A shared objective completed. */
   OBJECTIVE: 'objective',
   /** The scripted campaign is over. Longer and more resolved than OBJECTIVE. */

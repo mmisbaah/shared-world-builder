@@ -571,8 +571,38 @@ async function main() {
     conn.placeBlock(g.x, g.y, g.z, Number(state.selection.id));
   }
 
+  // --- undo ---------------------------------------------------------------
+  // The server owns the history. The count here exists only so the control can
+  // say whether there is anything to send -- a client that named the voxel to
+  // revert would be reaching work it did not do.
+  const btnUndo = document.getElementById('btn-undo');
+  let shownUndoDepth = -1;
+
+  function syncUndoButton() {
+    if (conn.undoDepth === shownUndoDepth) return;
+    shownUndoDepth = conn.undoDepth;
+    btnUndo.disabled = conn.undoDepth <= 0;
+    btnUndo.title = conn.undoDepth > 0
+      ? `Undo your last edit (Z) - ${conn.undoDepth} left`
+      : 'Nothing to undo yet (Z)';
+  }
+
+  function doUndo() {
+    // Answered rather than ignored: a key that appears to do nothing is worse
+    // than one that says why it could not.
+    if (!conn.undo()) {
+      hud.toast('nothing to undo', 'warn');
+      sound(SFX.DENY, {}, 'self');
+      syncUndoButton();
+    }
+  }
+
+  btnUndo.onclick = doUndo;
+  syncUndoButton();
+
   window.addEventListener('keydown', (e) => {
     switch (e.key.toLowerCase()) {
+      case 'z': doUndo(); break;
       case 'r': state.propRot = (state.propRot + 1) % 4; break;
       case 'g': state.showGrid = !state.showGrid; break;
       case 'f': hud.toggleStats(); break;
@@ -686,6 +716,10 @@ async function main() {
     // requestAnimationFrame, which does not run in every environment this has to
     // be verifiable in.
     latestEvents = conn.drainEvents();
+    // The count moves when an edit is acknowledged or an undo lands, neither of
+    // which the player clicks for, so the control is re-evaluated here. The
+    // early return makes it a comparison on the common path.
+    syncUndoButton();
 
     // Ephemeral remote cursors. Each incoming cursor stamps the sender's cell; the
     // boxes then age out on a TTL, because a cursor that is never re-aimed by idling out

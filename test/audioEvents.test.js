@@ -276,3 +276,56 @@ test('a session of mixed traffic keeps the player dominant', () => {
   // the longer bot cooldown are what stop it being the loudest *contribution*.
   assert.equal(rec.forWho('bot').length / rec.forWho('self').length, 4);
 });
+
+// ---------------------------------------------------------------------------
+// Undo
+// ---------------------------------------------------------------------------
+
+test('an accepted undo sounds its own voice rather than a placement', () => {
+  // Without the opType branch an undo plays the arrival of a block, and the
+  // player hears "something was built" for every edit they take back.
+  const rec = recorder();
+  playEvents([
+    { type: 'accepted', opId: 1, x: 3, y: 2, z: 1, mat: 0, opType: OP.UNDO },
+  ], deps(rec));
+  assert.equal(rec.calls.length, 1);
+  assert.equal(rec.calls[0].name, SFX.UNDO);
+  assert.equal(rec.calls[0].x, 3, 'and stays spatialised to the voxel it reverted');
+  assert.equal(rec.calls[0].who, 'self');
+});
+
+test('a plain placement still sounds like a placement', () => {
+  // The branch must not swallow the ordinary case on the way to the new one.
+  const rec = recorder();
+  playEvents([
+    { type: 'accepted', opId: 2, x: 3, y: 2, z: 1, mat: 4, opType: OP.PLACE_BLOCK },
+  ], deps(rec));
+  assert.equal(rec.calls[0].name, SFX.PLACE);
+});
+
+test('a refused undo says why, because nothing else will', () => {
+  // An undo that does not happen produces no delta and no visible change, so
+  // the refusal is the entire feedback the player gets for the keypress.
+  const toasts = [];
+  const rec = recorder();
+  playEvents([
+    { type: 'denied', opId: 3, opType: OP.UNDO, deny: 'empty', reason: 'nothing to undo' },
+  ], deps(rec, { toast: (t, k) => toasts.push([t, k]) }));
+
+  assert.equal(toasts.length, 1, 'the player is told why');
+  assert.equal(toasts[0][0], 'nothing to undo');
+  assert.equal(toasts[0][1], 'warn');
+  assert.equal(rec.calls[0].name, SFX.DENY, 'and hears the refusal too');
+});
+
+test('a conflict toast never fires for an undo, which cannot lose a race', () => {
+  // Undo carries no coordinates, so a "beat you to it" line would name nothing.
+  const toasts = [];
+  const rec = recorder();
+  playEvents([
+    { type: 'denied', opId: 4, opType: OP.UNDO, deny: 'occupied', reason: 'changed since you edited it' },
+  ], deps(rec, { toast: (t, k) => toasts.push([t, k]) }));
+
+  assert.deepEqual(toasts, [['changed since you edited it', 'warn']]);
+  assert.equal(rec.calls[0].name, SFX.DENY, 'and no conflict sound is the right one');
+});

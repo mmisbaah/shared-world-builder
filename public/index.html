@@ -127,6 +127,7 @@
       <dt>R</dt><dd>rotate prop</dd>
       <dt>G</dt><dd>grid overlay</dd>
       <dt>1/2/3</dt><dd>tool</dd>
+      <dt>Z</dt><dd>undo your edit</dd>
       <dt>F</dt><dd>frame stats</dd>
       <dt>M</dt><dd>mute audio</dd>
       <dt>C</dt><dd>claim ground</dd>
@@ -154,6 +155,12 @@
     <button class="tool active" data-tool="build"><i class="fa-solid fa-cube"></i> Build</button>
     <button class="tool" data-tool="decor"><i class="fa-solid fa-chair"></i> Decor</button>
     <button class="tool tool-danger" data-tool="destroy"><i class="fa-solid fa-burst"></i> Destroy</button>
+    <div class="sep"></div>
+    <!-- Starts disabled: at boot the server holds nothing of yours to revert,
+         and a button that looks ready but answers "nothing to undo" reads as
+         broken rather than as empty. -->
+    <button id="btn-undo" class="btn btn-ghost" disabled
+            title="Undo your last edit (Z)"><i class="fa-solid fa-rotate-left"></i> <span>Undo</span></button>
     <div class="sep"></div>
     <button id="btn-claim" class="btn btn-ghost" aria-pressed="false"
             title="Claim the ground you are looking at (C)"><i class="fa-solid fa-flag"></i> <span>Claim</span></button>

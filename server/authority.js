@@ -1,6 +1,6 @@
 import {
   CHUNK_SIZE, COLUMN_VOLUME, voxelIndex, chunkKey, worldToChunk, voxelKey,
-  OP, DENY, WORLD, encodeCells,
+  OP, DENY, WORLD, encodeCells, UNDO_DEPTH,
 } from '../shared/protocol.js';
 import { isValidMaterial, isValidProp, PROP_KEYS } from '../shared/materials.js';
 
@@ -36,6 +36,18 @@ export class Authority {
     this.budget = new Map();
     /** Buffered deltas, flushed once per tick. */
     this.pending = new Map();
+    /**
+     * Per-builder revert history, newest last: builderId -> entry[].
+     *
+     * Keyed by builder rather than shared, because undo may only ever touch the
+     * caller's own work -- see `undoEntry`. Entries are written only from the
+     * op paths a socket can reach, which deliberately excludes the bot
+     * commits (`commitAs` and friends): those stacks would be written and never
+     * read, in the hottest loop in the server.
+     *
+     * @type {Map<string, object[]>}
+     */
+    this.undoStacks = new Map();
   }
 
   // -------------------------------------------------------------------------
@@ -168,6 +180,7 @@ export class Authority {
       case OP.RELEASE_ZONE: return this.releaseZone(op, actor);
       case OP.REQUEST_LOCK: return this.requestLock(op, actor);
       case OP.RELEASE_LOCK: return this.releaseLock(op, actor);
+      case OP.UNDO: return this.undoEntry(op, actor);
       default: return reject(DENY.UNKNOWN_MATERIAL, 'unknown op');
     }
   }
@@ -238,7 +251,11 @@ export class Authority {
       return { ok: false, deny: DENY.OCCUPIED, reason: 'voxel already occupied', opId: op.id, op: op.t };
     }
 
+    // Captured before the write: an undo restores *this* value, so it has to be
+    // read while it is still on the voxel rather than inferred afterwards.
+    const prevMat = this.getBlock(x, y, z);
     const rev = this.setBlock(x, y, z, op.mat);
+    this._pushUndo(actor, { kind: 'block', x, y, z, prevMat, rev });
     const { cx, cz } = worldToChunk(x, y, z);
     this.record(cx, cz, (d) => {
       d.blocks.push([
@@ -268,7 +285,10 @@ export class Authority {
     }
 
     const { cx, cz } = worldToChunk(x, y, z);
+    // The block being lifted is what an undo puts back, so it is read first.
+    const prevMat = this.getBlock(x, y, z);
     const rev = this.setBlock(x, y, z, 0);
+    this._pushUndo(actor, { kind: 'block', x, y, z, prevMat, rev });
     this.record(cx, cz, (d) => {
       d.blocks.push([voxelIndex(x - cx * CHUNK_SIZE, y, z - cz * CHUNK_SIZE), 0, rev]);
       d.by = actor.id;
@@ -305,6 +325,7 @@ export class Authority {
     };
     c.props.set(pkey, record);
     c.rev++;
+    this._pushUndo(actor, { kind: 'prop', x, y, z, prev: null, rev: record.rev });
     this.record(cx, cz, (d) => { d.props.push(record); d.by = actor.id; });
     // As with blocks: a prop is work, so it renews the claim too.
     this.touchZone(actor.id);
@@ -322,6 +343,173 @@ export class Authority {
     const existing = c?.props.get(pkey);
     if (!existing) {
       return { ok: false, deny: DENY.EMPTY, reason: 'no prop here', opId: op.id, op: op.t };
+    }
+    // The whole record, not a reference: undoing a removal has to put the prop
+    // back exactly as it was, including who placed it and how it was rotated.
+    this._pushUndo(actor, { kind: 'prop', x, y, z, prev: { ...existing }, rev: existing.rev });
+    c.props.delete(pkey);
+    c.rev++;
+    this.record(cx, cz, (d) => { d.propsRemoved.push(x + ',' + y + ',' + z); d.by = actor.id; });
+    return { ok: true, deny: DENY.NONE, opId: op.id, op: op.t, result: { x, y, z, removed: true } };
+  }
+
+  // -------------------------------------------------------------------------
+  // Undo
+  // -------------------------------------------------------------------------
+
+  /**
+   * Record what a write overwrote, so it can be put back.
+   *
+   * Called only from the four mutation paths a socket reaches -- deliberately
+   * *not* from `undoEntry`. Storing the *previous* value rather than the new one
+   * is the whole trick: the new value is already in the world, and recovering
+   * what was there before it would mean either scanning history or trusting the
+   * client, and this server never does the second thing.
+   */
+  _pushUndo(actor, entry) {
+    let stack = this.undoStacks.get(actor.id);
+    if (!stack) {
+      stack = [];
+      this.undoStacks.set(actor.id, stack);
+    }
+    stack.push(entry);
+    // Capped from the bottom: the newest edits stay reachable and the oldest
+    // quietly falls off, rather than the stack growing with session length.
+    while (stack.length > UNDO_DEPTH) stack.shift();
+  }
+
+  /**
+   * Re-point every deeper entry for this voxel at the revision just written.
+   *
+   * Entries hold the revision their own edit produced, which the guard then
+   * compares with the live one to ask "has anyone else been here?". An undo is
+   * also a write, so it moves that number -- and without this, editing the same
+   * voxel twice would strand the earlier entry behind a revision only I could
+   * have caused. Re-pointing keeps the question honest: from then on, only
+   * somebody *else's* write can fail it.
+   *
+   * Linear over at most UNDO_DEPTH entries, and only ever reached from undo, so
+   * the placement path never pays for it.
+   */
+  _refreshUndo(actor, kind, x, y, z, rev) {
+    const stack = this.undoStacks.get(actor.id);
+    if (!stack) return;
+    for (const e of stack) {
+      if (e.kind === kind && e.x === x && e.y === y && e.z === z) e.rev = rev;
+    }
+  }
+
+  /**
+   * Revert this builder's own most recent edit.
+   *
+   * Two things make this safe in a world other people are editing too:
+   *
+   * 1. It pops from *this builder's* stack. The request carries no coordinates
+   *    and no way to supply one, so no player can name an edit they did not
+   *    make -- which is what "undo my own last N edits" has to mean when the
+   *    world is shared.
+   * 2. The entry's revision is compared with the voxel's current one. If anyone
+   *    has written since, the world has moved on and reverting would discard
+   *    *their* work rather than ours, so it is refused.
+   *
+   * A refusal pops as well as refusing. Leaving a permanently failing entry on
+   * top would freeze every edit behind it, so an undo the world no longer
+   * permits is simply spent.
+   *
+   * It deliberately does **not** record what it overwrote. Doing so would turn
+   * undo into an undo-*redo* toggle: after reverting the newest edit, the next
+   * press would revert the revert, and the player would stand in place flipping
+   * one block over while believing they were walking back through their work.
+   * Walking back needs the stack to shrink, so it does.
+   */
+  undoEntry(op, actor) {
+    const stack = this.undoStacks.get(actor.id);
+    const entry = stack?.length ? stack[stack.length - 1] : null;
+    if (!entry) {
+      return { ok: false, deny: DENY.EMPTY, reason: 'nothing to undo', opId: op.id, op: op.t };
+    }
+    stack.pop();
+
+    const bad = this.preflight(entry, actor);
+    if (bad) {
+      return { ...bad, reason: `cannot undo: ${bad.reason}`, opId: op.id, op: op.t };
+    }
+
+    return entry.kind === 'prop' ? this._undoProp(entry, op, actor)
+      : this._undoBlock(entry, op, actor);
+  }
+
+  /** Put a voxel back to the value it held before this builder changed it. */
+  _undoBlock(entry, op, actor) {
+    const { x, y, z } = entry;
+    if (this.getRevision(x, y, z) !== entry.rev) {
+      return {
+        ok: false, deny: DENY.OCCUPIED,
+        reason: 'that block has changed since you last edited it',
+        opId: op.id, op: op.t,
+      };
+    }
+
+    const { cx, cz } = worldToChunk(x, y, z);
+    const rev = this.setBlock(x, y, z, entry.prevMat);
+    // Re-point the deeper entries for this voxel. The guard asks "has anybody
+    // else been here?", and comparing revisions answers that -- but my own undo
+    // just moved the number too, so leaving them stale would make the second
+    // press on the same block refuse for a change I made myself.
+    this._refreshUndo(actor, 'block', x, y, z, rev);
+    this.record(cx, cz, (d) => {
+      d.blocks.push([
+        voxelIndex(x - cx * CHUNK_SIZE, y, z - cz * CHUNK_SIZE), entry.prevMat, rev,
+      ]);
+      d.by = actor.id;
+    });
+    // Reverting a demolition is rebuilding and renews the claim; reverting a
+    // build is demolition and does not. Claims follow building here, so only the
+    // first counts -- otherwise a stack of undos would keep a district alive
+    // without anyone building in it.
+    if (entry.prevMat !== 0) this.touchZone(actor.id);
+    return {
+      ok: true, deny: DENY.NONE, opId: op.id, op: op.t,
+      result: { x, y, z, mat: entry.prevMat, rev, by: actor.id },
+    };
+  }
+
+  /** Put a prop back, or take away the one this builder set down. */
+  _undoProp(entry, op, actor) {
+    const { x, y, z } = entry;
+    const { cx, cz } = worldToChunk(x, y, z);
+    const c = this.chunk(cx, cz);
+    const pkey = voxelKey(x, y, z);
+    const existing = c.props.get(pkey);
+
+    if (entry.prev) {
+      // We removed it. Restorable only while nothing stands there -- a prop
+      // placed since belongs to whoever placed it.
+      if (existing) {
+        return {
+          ok: false, deny: DENY.OCCUPIED, reason: 'something else stands there now',
+          opId: op.id, op: op.t,
+        };
+      }
+      // A fresh revision rather than the old one: the cell is a new record as
+      // far as the guard is concerned, and a stale rev would let the next undo
+      // compare against an id nobody has ever sent.
+      const record = { ...entry.prev, rev: this.revCounter++ };
+      c.props.set(pkey, record);
+      c.rev++;
+      this._refreshUndo(actor, 'prop', x, y, z, record.rev);
+      this.record(cx, cz, (d) => { d.props.push(record); d.by = actor.id; });
+      this.touchZone(actor.id);
+      return { ok: true, deny: DENY.NONE, opId: op.id, op: op.t, result: record };
+    }
+
+    // We placed it, so it must still be that exact prop -- otherwise this would
+    // delete somebody else's replacement.
+    if (!existing || existing.rev !== entry.rev) {
+      return {
+        ok: false, deny: DENY.OCCUPIED, reason: 'that prop has changed since you placed it',
+        opId: op.id, op: op.t,
+      };
     }
     c.props.delete(pkey);
     c.rev++;

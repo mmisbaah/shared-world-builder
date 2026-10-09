@@ -477,6 +477,31 @@ export class Sfx {
   }
 
   /**
+   * An edit of mine was taken back.
+   *
+   * Descending, and quicker than a placement. An undo is a correction rather
+   * than a construction: it should sound like something being withdrawn, and a
+   * figure that resolved upward would read as a reward for having made the
+   * mistake in the first place. Four notes down a minor sixth inside a fifth of
+   * a second, so it stays out of the way of whatever happens next.
+   */
+  _undo(t, { gain, pan = 0 }) {
+    const root = 392; // G4
+    const steps = [0, -2, -5, -9];
+    const voices = [];
+    steps.forEach((semi, i) => {
+      const f = root * Math.pow(2, semi / 12);
+      voices.push(this._tone(t + i * 0.052, {
+        freq: f, type: 'triangle', peak: gain * 0.11, attack: 0.004, decay: 0.3,
+      }));
+      voices.push(this._tone(t + i * 0.052, {
+        freq: f * 2, type: 'sine', peak: gain * 0.04, attack: 0.004, decay: 0.18,
+      }));
+    });
+    return this._emit(voices, pan);
+  }
+
+  /**
    * The scripted campaign is over.
    *
    * Deliberately not a louder `_objective`. That plays a four-note arpeggio,
@@ -580,6 +605,8 @@ export class Sfx {
         return this._objective(t, { gain });
       case SFX.VICTORY:
         return this._victory(t, { gain });
+      case SFX.UNDO:
+        return this._undo(t, { gain, pan });
       case SFX.UI:
         return this._ui(t, { gain, pitch });
       case SFX.READY:

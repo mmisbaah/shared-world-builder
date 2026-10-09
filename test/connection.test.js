@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import { World } from '../public/src/world/world.js';
 import { Connection } from '../public/src/net/connection.js';
-import { OP, DENY, EV, CHUNK_SIZE, voxelIndex, encodeCells, decodeCells } from '../shared/protocol.js';
+import { OP, DENY, EV, CHUNK_SIZE, voxelIndex, encodeCells, decodeCells, UNDO_DEPTH } from '../shared/protocol.js';
 
 const STONE = 1;
 const BRICK = 2;
@@ -572,4 +572,95 @@ test('a nonsensical rtt sample is ignored', () => {
   conn._sampleRtt(NaN);
   conn._sampleRtt(-5);
   assert.equal(conn.rtt, 30);
+});
+
+// ---------------------------------------------------------------------------
+// Undo
+// ---------------------------------------------------------------------------
+//
+// The client keeps a count, not a history. Everything about *which* edit gets
+// reverted is the server's decision, so the only thing worth testing here is
+// that the count agrees with the server often enough for the button to be
+// honest -- and that undo, having predicted nothing, never reaches the code
+// that rolls predictions back.
+
+test('an accepted edit joins the history, a denied one does not', () => {
+  const { conn, sent } = harness();
+  assert.equal(conn.undoDepth, 0, 'nothing to undo at boot');
+
+  conn.placeBlock(0, 1, 0, STONE);
+  answer(sent, conn, 0, { ok: true, result: { x: 0, y: 1, z: 0, mat: STONE, rev: 7 } });
+  assert.equal(conn.undoDepth, 1);
+
+  conn.placeBlock(1, 1, 0, STONE);
+  answer(sent, conn, 1, { ok: false, deny: DENY.OCCUPIED, reason: 'occupied' });
+  assert.equal(conn.undoDepth, 1, 'a refusal is not history the player can unwind');
+});
+
+test('undo sends nothing when there is no history', () => {
+  const { conn, sent } = harness();
+  assert.equal(conn.undo(), false);
+  assert.equal(sent.length, 0, 'and does not spend a round trip proving it');
+});
+
+test('a successful undo decrements the history', () => {
+  const { conn, sent } = harness();
+  conn.placeBlock(0, 1, 0, STONE);
+  answer(sent, conn, 0, { ok: true, result: { x: 0, y: 1, z: 0, mat: STONE, rev: 7 } });
+  assert.equal(conn.undoDepth, 1);
+
+  assert.equal(conn.undo(), true);
+  answer(sent, conn, 1, { ok: true, result: { x: 0, y: 1, z: 0, mat: 0, rev: 8 } });
+  assert.equal(conn.undoDepth, 0);
+});
+
+test('an empty-stack denial resets the count instead of decrementing it', () => {
+  // The local count can run ahead of the server after a lost ack. Zeroing is
+  // what makes it converge; decrementing would leave it permanently wrong.
+  const { conn, sent } = harness();
+  conn.placeBlock(0, 1, 0, STONE);
+  answer(sent, conn, 0, { ok: true, result: { x: 0, y: 1, z: 0, mat: STONE, rev: 7 } });
+  assert.equal(conn.undoDepth, 1);
+
+  conn.undo();
+  answer(sent, conn, 1, { ok: false, deny: DENY.EMPTY, reason: 'nothing to undo' });
+  assert.equal(conn.undoDepth, 0, 'the server knows better than the local count');
+});
+
+test('a refusal because the world moved on keeps the rest of the history', () => {
+  const { conn, sent } = harness();
+  for (let i = 0; i < 3; i++) {
+    conn.placeBlock(i, 1, 0, STONE);
+    answer(sent, conn, i, { ok: true, result: { x: i, y: 1, z: 0, mat: STONE, rev: 7 + i } });
+  }
+  assert.equal(conn.undoDepth, 3);
+
+  conn.undo();
+  answer(sent, conn, 3, { ok: false, deny: DENY.OCCUPIED, reason: 'that block has changed' });
+  assert.equal(conn.undoDepth, 2, 'the other two undos still work');
+});
+
+test('the history count is capped at the depth the server keeps', () => {
+  const { conn, sent } = harness();
+  for (let i = 0; i < UNDO_DEPTH + 4; i++) {
+    conn.placeBlock(i % CHUNK_SIZE, 1, (i / CHUNK_SIZE) | 0, STONE);
+    answer(sent, conn, i, { ok: true, result: { x: 0, y: 1, z: 0, mat: STONE, rev: 7 + i } });
+  }
+  assert.equal(conn.undoDepth, UNDO_DEPTH,
+    'the button must not promise an undo the stack has already trimmed');
+});
+
+test('rollback paths ignore an op that never predicted anything', () => {
+  // Reached from timeout and disconnect, not only from a denial: undo has no
+  // overlay and its record carries no coordinates, so settling would write to an
+  // undefined voxel and rejecting would report a race that never happened.
+  const { world, conn } = harness();
+  const rec = { type: OP.UNDO, opId: 99 };
+  const before = conn.drainEvents().length;
+
+  conn._settle(rec, { x: 0, y: 1, z: 0, mat: 0, rev: 3 });
+  conn._reject(rec, { ok: false, deny: DENY.EMPTY, reason: 'nothing to undo' });
+
+  assert.equal(conn.drainEvents().length, before, 'nothing was rolled back or reported');
+  assert.equal(world.hasPrediction(0, 1, 0), false, 'no phantom overlay appeared');
 });

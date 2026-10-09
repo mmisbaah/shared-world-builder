@@ -34,7 +34,7 @@
  */
 
 import {
-  OP, DENY, EV, WORLD, CHUNK_SIZE, localFromIndex, decodeCells,
+  OP, DENY, EV, WORLD, CHUNK_SIZE, localFromIndex, decodeCells, UNDO_DEPTH,
 } from '../../../shared/protocol.js';
 
 /** Socket.io's own ESM bundle, served by the server at this path. */
@@ -78,6 +78,17 @@ export class Connection {
     /** @type {Map<number, object>} opId -> pending op record */
     this.pending = new Map();
     this.nextOpId = 1;
+
+    /**
+     * How many of this builder's own edits the server still holds revertible.
+     *
+     * Maintained from acks rather than counted optimistically, so an edit joins
+     * the history only once the server accepted it -- a denied or timed-out op
+     * is not something the player can unwind. Mirrors the server's own stack and
+     * is capped at the same depth for the same reason: a count that could run
+     * ahead of the stack would promise an undo the server has already trimmed.
+     */
+    this.undoDepth = 0;
 
     /**
      * Round trip time in ms, from OP.PING probes. This is the best recent sample
@@ -291,6 +302,24 @@ export class Connection {
   }
 
   /**
+   * Ask the server to revert this builder's own most recent edit.
+   *
+   * Deliberately predicts nothing. Everything else predicts because the player
+   * is holding a pointer down and the delay is continuous; undo is one discrete
+   * press answered in a single round trip, and the change arrives as an ordinary
+   * chunk delta a tick later. Predicting it would mean teaching the settle and
+   * reject paths about an op that carries no coordinates of its own, and the
+   * cost of getting that wrong is a phantom block that never clears.
+   *
+   * @returns {boolean} false when there is nothing to send -- the caller says so
+   */
+  undo() {
+    if (this.undoDepth <= 0) return false;
+    this._send({ t: OP.UNDO }, {});
+    return true;
+  }
+
+  /**
    * Broadcast the cell the pointer is over so other builders can see where you are
    * working. Throttled by cell and by a short interval: without that a fast pan across
    * the island fired an event on every pointermove, and the cursor boxes of other players
@@ -407,6 +436,44 @@ export class Connection {
     if (!rec) return; // unknown or already timed out
     this.pending.delete(msg.opId);
     this.stats.inflight = this.pending.size;
+
+    // Undo predicts nothing, so there is nothing for settle or reject to do --
+    // and both would write a voxel named by a record that has no coordinates of
+    // its own. Handled here rather than at each call site, because the timeout
+    // and disconnect paths reach `_reject` as well.
+    if (rec.type === OP.UNDO) {
+      rec.phase = msg.ok ? PHASE.ACCEPTED : PHASE.DENIED;
+      if (msg.ok) {
+        this.undoDepth = Math.max(0, this.undoDepth - 1);
+        this._push({
+          type: 'accepted',
+          opId: rec.opId,
+          x: msg.result?.x ?? null,
+          y: msg.result?.y ?? null,
+          z: msg.result?.z ?? null,
+          mat: msg.result?.mat ?? 0,
+          opType: OP.UNDO,
+        });
+      } else {
+        // A refusal *spends* the entry: the server pops it rather than leaving a
+        // permanently failing one on top to freeze every edit behind it, so the
+        // count follows it down. EMPTY is the one denial where the local number
+        // is not merely ahead of the server but wrong outright -- there was never
+        // anything there to unwind -- so that one is zeroed instead.
+        this.undoDepth = msg.deny === DENY.EMPTY
+          ? 0 : Math.max(0, this.undoDepth - 1);
+        this._push({
+          type: 'denied',
+          opId: rec.opId,
+          deny: msg.deny,
+          reason: msg.reason ?? '',
+          opType: OP.UNDO,
+        });
+      }
+      this._emit('pending');
+      return;
+    }
+
     // Locks and zone claims do not predict anything, so there is nothing to roll
     // back -- only their outcome matters.
     if (rec.type === OP.REQUEST_LOCK || rec.type === OP.RELEASE_LOCK
@@ -444,6 +511,13 @@ export class Connection {
     if (msg.ok) {
       rec.phase = PHASE.ACCEPTED;
       this.stats.accepted++;
+      // Every accepted edit joins the revert history. Denied and timed-out ops
+      // never do, which is what keeps this meaning "the server is holding this
+      // much of your work" rather than "you pressed these keys".
+      if (rec.type === OP.PLACE_BLOCK || rec.type === OP.REMOVE_BLOCK
+        || rec.type === OP.PLACE_PROP || rec.type === OP.REMOVE_PROP) {
+        this.undoDepth = Math.min(UNDO_DEPTH, this.undoDepth + 1);
+      }
       this._settle(rec, msg.result);
       this._push({
         type: 'accepted',
@@ -471,6 +545,9 @@ export class Connection {
    * accepted prop is written straight through and a denied one needs no rollback.
    */
   _settle(rec, result) {
+    // Undo predicts nothing, so there is no overlay to clear -- and `rec` carries
+    // no coordinates, so falling through would write to an undefined voxel.
+    if (rec.type === OP.UNDO) return;
     if (rec.type === OP.PLACE_PROP) {
       if (result) this.world.setProp(result);
       return;
@@ -496,6 +573,10 @@ export class Connection {
    * would flash our predicted material until the winner's own delta arrived.
    */
   _reject(rec, msg) {
+    // As in `_settle`: nothing was predicted, so there is nothing to roll back.
+    // Returning before the prop branch also keeps it from reporting a conflict
+    // for a denial the UNDO handler already reported.
+    if (rec.type === OP.UNDO) return;
     if (rec.type === OP.PLACE_PROP || rec.type === OP.REMOVE_PROP) {
       this._push({
         type: 'denied',
