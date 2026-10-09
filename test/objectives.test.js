@@ -13,7 +13,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  OBJECTIVES, OBJECTIVE_IDS, METRIC, scanWorld, evaluate, toWire,
+  OBJECTIVES, OBJECTIVE_IDS, METRIC, CAMPAIGN_LENGTH, ROUND_SIZE,
+  rollingObjective, roundOf, scanWorld, evaluate, toWire,
 } from '../shared/objectives.js';
 import { ObjectiveTracker } from '../server/objectives.js';
 import { Authority } from '../server/authority.js';
@@ -412,7 +413,11 @@ test('reaching the end of the ladder stops advancing and does not hang', () => {
 
   const advanced = t.evaluate();
   assert.equal(advanced, true);
-  assert.equal(t.index, OBJECTIVES.length, 'ladder exhausted');
+  // `index === OBJECTIVES.length` no longer means "out of content": it means the
+  // scripted campaign is over and the tail is waiting on a human. What matters
+  // is that the loop is bounded -- it must stop at the end of the array it was
+  // handed rather than regenerate one that grows with the cursor.
+  assert.equal(t.index, OBJECTIVES.length, 'campaign done, tail not yet unlocked');
   // A second evaluation must be a no-op rather than a loop.
   assert.equal(t.evaluate(), false);
   assert.equal(t.index, OBJECTIVES.length);
@@ -461,4 +466,182 @@ test('toWire carries definitions and verdicts but no authority', () => {
   }
   // JSON round-trip: this goes over a socket, so it must survive serialisation.
   assert.deepEqual(JSON.parse(JSON.stringify(wire)).total, OBJECTIVES.length);
+});
+
+// ---------------------------------------------------------------------------
+// The endless tail
+// ---------------------------------------------------------------------------
+//
+// Past `garden` the ladder keeps going, generated from the world seed. What
+// makes that workable -- with no new persistence field -- is that generation is
+// a pure function of (seed, n): the server stores a cursor and a list of
+// completed ids, and re-derives everything else. Which is also why a restart
+// mid-tail has to produce byte-identical ids, or the client's `completed` list
+// stops matching the `active` list it is rendered against.
+
+test('a tail objective is a pure function of (seed, n)', () => {
+  assert.deepEqual(rollingObjective(1234, 0), rollingObjective(1234, 0),
+    'same inputs give a byte-identical objective');
+  assert.notDeepEqual(rollingObjective(1234, 0), rollingObjective(99, 0),
+    'a different seed gives a different world a different ladder');
+  assert.notDeepEqual(rollingObjective(1234, 0), rollingObjective(1234, 1),
+    'and consecutive entries are not copies of each other');
+});
+
+test('tail ids never collide with the campaign or with each other', () => {
+  const ids = new Set(OBJECTIVES.map((o) => o.id));
+  assert.equal(ids.size, OBJECTIVES.length, 'campaign ids are already unique');
+  for (let n = 0; n < 40; n++) {
+    const id = rollingObjective(1, n).id;
+    assert.equal(ids.has(id), false, `tail id ${id} collides`);
+    ids.add(id);
+  }
+  assert.equal(ids.size, OBJECTIVES.length + 40);
+  // The client treats an id as proof of completion, so a collision would quietly
+  // mark an unfinished objective as done rather than failing loudly.
+});
+
+test('every tail objective is satisfiable and says what it wants', () => {
+  // The failure worth guarding: an out-of-reach goal ends the game without a
+  // word -- the panel shows a bar that never moves and nothing in the world
+  // explains why.
+  for (let n = 0; n < 60; n++) {
+    const o = rollingObjective(7, n);
+    assert.ok(Object.values(METRIC).includes(o.metric),
+      `${o.id} uses a metric that exists`);
+    assert.ok(Number.isFinite(o.goal) && o.goal >= 1, `${o.id} has a real goal`);
+    assert.ok(o.title && o.brief, `${o.id} says what to do`);
+    assert.equal(o.rolling, true, `${o.id} is flagged as generated`);
+    if (o.metric === METRIC.COLUMN_HEIGHT) {
+      assert.ok(o.goal <= WORLD.MAX_Y - 1, `${o.id} stays inside the column`);
+    }
+    if (o.metric === METRIC.DISTINCT_BUILDERS) {
+      assert.ok(o.goal <= 5, `${o.id} does not demand an impossible crowd`);
+    }
+    if (o.metric === METRIC.MATERIAL_COUNT) {
+      assert.ok(isValidMaterial(o.material), `${o.id} asks for a real material`);
+    }
+    if (o.metric === METRIC.PROP_COUNT) {
+      assert.ok(Object.hasOwn(PROPS, o.prop), `${o.id} asks for a real prop`);
+    }
+  }
+});
+
+test('roundOf separates the campaign from rounds of the tail', () => {
+  assert.equal(roundOf(0), 0, 'the campaign is round zero');
+  assert.equal(roundOf(CAMPAIGN_LENGTH - 1), 0);
+  assert.equal(roundOf(CAMPAIGN_LENGTH), 1, 'the tail starts at round one');
+  assert.equal(roundOf(CAMPAIGN_LENGTH + ROUND_SIZE - 1), 1);
+  assert.equal(roundOf(CAMPAIGN_LENGTH + ROUND_SIZE), 2);
+  // Safe as a bare callback: `map` passes the array position as a second
+  // argument, and a defaulted parameter would have swallowed it and reported the
+  // wrong round for every element instead of failing.
+  assert.deepEqual([0, 7, 8, 12].map(roundOf), [0, 0, 1, 2]);
+});
+
+/**
+ * Satisfy an objective's metric in the fake world. The human-contribution gate
+ * is a separate input, so callers still have to touch it themselves.
+ */
+function satisfyTailMetric(t, auth, o) {
+  const c = auth.chunks.get('0,0');
+  if (o.metric === METRIC.PROP_COUNT) {
+    for (let i = 0; i < o.goal; i++) c.props.set(`tail${i}`, prop('lantern'));
+  } else if (o.metric === METRIC.COLUMN_HEIGHT) {
+    for (let y = 0; y < o.goal; y++) put(c, 0, y, 0, 1);
+  } else if (o.metric === METRIC.MATERIAL_COUNT) {
+    for (let i = 0; i < o.goal; i++) {
+      put(c, i % CHUNK_SIZE, 0, Math.floor(i / CHUNK_SIZE), o.material);
+    }
+  } else if (o.metric === METRIC.DISTINCT_BUILDERS) {
+    for (let i = 0; i < o.goal; i++) t.noteContributor(`tail_b${i}`);
+  } else {
+    put(c, 0, 0, 0, o.material);
+  }
+}
+
+test('the campaign hands over to the tail with no dead tick between them', () => {
+  const auth = fakeAuthority();
+  const t = new ObjectiveTracker(auth);
+  // Stand on the last scripted objective, with the seven before it behind us.
+  t.index = CAMPAIGN_LENGTH - 1;
+  t.completed = OBJECTIVES.slice(0, CAMPAIGN_LENGTH - 1).map((o) => o.id);
+  t.humanTouched = new Set(t.completed);
+
+  const garden = OBJECTIVES[CAMPAIGN_LENGTH - 1];
+  assert.equal(garden.id, 'garden', 'the scripted ladder still ends at garden');
+  for (let i = 0; i < 4; i++) auth.chunks.get('0,0').props.set(`p${i}`, prop('plant'));
+  t.humanTouched.add(garden.id);
+
+  let boundary = 0;
+  t.onCampaignComplete = () => { boundary++; };
+
+  t.evaluate();
+  assert.equal(t.index, CAMPAIGN_LENGTH, 'the cursor is past the campaign');
+  assert.equal(boundary, 1, 'the boundary fires');
+
+  const p = t.payload();
+  assert.equal(p.campaign, CAMPAIGN_LENGTH, 'the client is told where the boundary was');
+  assert.ok(p.active[CAMPAIGN_LENGTH],
+    'a tail objective is already waiting -- no empty tick for the panel to render');
+  assert.match(p.active[CAMPAIGN_LENGTH].id, /^rolling_/);
+
+  // Every objective after this is just another step. Re-firing would make the
+  // boundary stop feeling like one.
+  t.evaluate();
+  assert.equal(boundary, 1, 'and the boundary stays fired exactly once');
+});
+
+test('the tracker keeps walking after the campaign is over', () => {
+  const auth = fakeAuthority();
+  const t = new ObjectiveTracker(auth);
+  t.index = CAMPAIGN_LENGTH;
+  t.completed = OBJECTIVES.map((o) => o.id);
+  t.humanTouched = new Set(t.completed);
+
+  const first = rollingObjective(t.seed, 0);
+  satisfyTailMetric(t, auth, first);
+  t.humanTouched.add(first.id);
+
+  assert.equal(t.evaluate(), true, 'a satisfied tail objective advances the cursor');
+  assert.equal(t.index, CAMPAIGN_LENGTH + 1, 'and it walked the tail, not the campaign');
+  assert.equal(t.completed.at(-1), first.id, 'recording the generated id');
+  assert.equal(t.wire.index, t.index, 'the payload agrees with the cursor');
+});
+
+test('a restarted server regenerates an identical tail', () => {
+  const make = () => new ObjectiveTracker(fakeAuthority());
+  const before = make();
+  before.index = CAMPAIGN_LENGTH + 6;
+  before.completed = [...OBJECTIVES.map((o) => o.id), 'rolling_0', 'rolling_1'];
+
+  const after = make();   // a fresh process with only the cursor restored
+  after.index = before.index;
+  after.completed = before.completed.slice();
+
+  assert.deepEqual(before.ladder().map((o) => o.id), after.ladder().map((o) => o.id),
+    'the same seed regenerates the same ids, byte for byte');
+  assert.ok(after.ladder().length > after.index,
+    'the next objective is already defined, so there is never an empty tick');
+  // This is the invariant the panel actually depends on: `recent` finds a
+  // finished objective by looking it up in `active`. Ids that went stale would
+  // make completed goals silently vanish from the list rather than erroring.
+  const ladderIds = new Set(after.ladder().map((o) => o.id));
+  for (const id of after.completed) {
+    assert.ok(ladderIds.has(id), `completed id ${id} is still findable in the ladder`);
+  }
+});
+
+test('the wire format says where the campaign ended', () => {
+  const s = scan([makeChunk()], [], ['a']);
+  const ladder = [...OBJECTIVES, rollingObjective(1, 0), rollingObjective(1, 1)];
+  const wire = toWire(ladder, CAMPAIGN_LENGTH,
+    ladder.slice(0, CAMPAIGN_LENGTH).map((o) => o.id), s, s);
+
+  assert.equal(wire.campaign, CAMPAIGN_LENGTH);
+  assert.equal(wire.total, ladder.length, 'the client can see past the boundary');
+  assert.equal(wire.active[CAMPAIGN_LENGTH].rolling, true,
+    'and can tell a generated objective from a scripted one');
+  assert.deepEqual(JSON.parse(JSON.stringify(wire)).campaign, CAMPAIGN_LENGTH,
+    'which survives the socket');
 });

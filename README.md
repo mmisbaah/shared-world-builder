@@ -658,6 +658,53 @@ accepted, measured by the server, advanced the ladder, fired the completion
 banner, and the panel rolled on to the next objective carrying the correct
 progress (1/6) including the lantern that had just been placed.
 
+### The ladder does not end
+
+Eight objectives was a beginning, and then the panel said *Ladder complete* and
+there was nothing left to do — in a game whose whole pitch is a shared world
+that persists.
+
+The tail is generated rather than scripted, and the property that makes it
+workable is that **an objective is a pure function of `(seed, n)`**. Persistence
+saves a cursor and a list of completed ids; it never saves definitions. A stored
+tail would need a new field and would come back different after a restart,
+orphaning every id the client had already been shown. A derived one regenerates
+byte-identically with nothing extra to save:
+
+- **`rollingObjective(seed, n)`** picks a kind — more of a material, more of a
+  prop, a taller column, more builders — from Mulberry32 over a 32-bit mix of
+  `(seed, n)`. Mulberry32 rather than `Math.random` because the stream has to
+  come out identical on every platform after every restart: if it does not, the
+  ids drift and the client's `completed` list stops matching the `active` list it
+  renders against, and finished goals silently vanish from the history.
+- **Difficulty tiers at `1 + min(4, floor(n / 4))` and stops there.** Past
+  tier 5 an endless mode stops being a reason to return and becomes a reason to
+  stop.
+- **Only three objectives ahead are generated.** They are broadcast to every
+  client every second, so a tail generated in full would grow the payload with
+  the length of the session until the thing meant to bring people back became
+  the reason the frame hitched.
+- **`roundOf(index)` labels them into rounds of four** rather than printing
+  "Objective 12 of 15". A total that moves every time you approach it is worse
+  than admitting there is not one.
+
+The boundary itself is worth celebrating exactly once. Crossing out of the
+scripted campaign fires `onCampaignComplete` on the server and a chained
+`VICTORY` sting plus a second banner on the client — chained *after* the normal
+objective reward rather than beside it, because two celebrations at the same
+instant read as one louder noise and neither sentence gets read. Every tail
+objective after it goes through `onComplete` like any other, which is what keeps
+the boundary feeling like one.
+
+Verified live on a server that had already finished the campaign: `index: 8`,
+`campaign: 8`, `active[8]` = `rolling_0` *"High Ground"* (18 voxels, 13 of them
+already built by the bots), panel kicker reading
+`Endless · round 1 · objective 9 · 8 done`, and no empty tick in between. The
+crossing was then driven against that real ladder in all three directions: it
+fires on `garden` (`doneIdx 7 === campaign - 1`), it does not re-fire on
+`rolling_0` (`doneIdx 8`), and a client joining after the fact receives `null`
+and no celebration.
+
 ## Audio: procedural, and built around attribution
 
 There was no audio at all. It is now entirely synthesised — oscillators and one
@@ -1171,7 +1218,7 @@ Stated plainly rather than overclaimed:
 
 ## Tests
 
-469 tests, `node --test test/`, all passing. They cover the layers that are easy
+477 tests, `node --test test/`, all passing. They cover the layers that are easy
 to get subtly wrong:
 
 - `coach` (33) - every step's requirement being something the player can always do, ids matching what they wait for, no two consecutive steps sharing a signal, one step per pump rather than collapsing, per-step independence, clicks on a re-rendered panel, and persistence through an injected store
@@ -1183,9 +1230,15 @@ to get subtly wrong:
   every restored-claim shape — malformed entries dropped, size clamped, clock not
   resumed
 
-- `objectives` (26) — the world scan (full-height columns, contiguous runs,
+- `objectives` (40) — the world scan (full-height columns, contiguous runs,
   per-chunk indexing), every metric, monotonic completion, bounded ladder advance,
-  and the wire format surviving a JSON round-trip
+  the wire format surviving a JSON round-trip, and the endless tail: each
+  objective being a pure function of `(seed, n)` with ids that never collide,
+  every goal being reachable, `roundOf` staying correct when passed straight to
+  `map`, the campaign handing over with no empty tick in between, `onCampaignComplete`
+  firing once and only once, and a restarted server regenerating an identical tail
+  so the completed ids it restored are still findable in the ladder they are
+  rendered against
 
 - `audioEvents` (20) — the event-to-sound mapping: the double-strike guard that keeps
   one placement from sounding twice, block-versus-prop, bot intent announcements

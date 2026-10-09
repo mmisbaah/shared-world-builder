@@ -125,6 +125,16 @@ export const OBJECTIVES = [
 export const OBJECTIVE_IDS = OBJECTIVES.map((o) => o.id);
 
 /**
+ * Where the scripted campaign ends and the endless tail begins.
+ *
+ * Exported rather than inferred by the client from `total`, because `total` is
+ * the length of whatever ladder the server generated and grows as it goes -- it
+ * is a property of the tail, not a boundary. The client needs the boundary to
+ * know it is allowed to celebrate.
+ */
+export const CAMPAIGN_LENGTH = OBJECTIVES.length;
+
+/**
  * Scan authoritative world state into the counts the objectives need.
  *
  * One pass over every chunk, computing every metric at once. The ladder is
@@ -251,7 +261,180 @@ export function toWire(objectives, index, completed, scan, worldStats) {
   return {
     index,
     total: objectives.length,
+    /**
+     * Length of the scripted campaign, so the client can tell "objective 9" from
+     * "objective 9 of the endless tail" and only celebrate crossing the actual
+     * boundary. Taken from the constant rather than `objectives.length`, which
+     * includes generated tail entries.
+     */
+    campaign: CAMPAIGN_LENGTH,
     completed,
     active: objectives.map((o) => ({ ...o, ...evaluate(o, scan, worldStats) })),
   };
+}
+
+// ---------------------------------------------------------------------------
+// The endless tail
+// ---------------------------------------------------------------------------
+
+/**
+ * Objectives past the end of the campaign.
+ *
+ * A ladder that stops leaves nobody a reason to return: the panel reads "Ladder
+ * complete" and the shared goal that organised everyone's building is simply
+ * over. A *daily* reset was considered and rejected, because it penalises a
+ * persistent world for the crime of having been built on Tuesday -- and this
+ * world is the thing players are meant to care about, so a mode that wipes their
+ * gains on a schedule is a mode nobody invests in.
+ *
+ * So the tail is endless instead: the same measured goals, re-rolled with rising
+ * targets. Two properties matter more than the flavour text:
+ *
+ * 1. **Each is a pure function of `(seed, n)`.** Persistence round-trips the
+ *    cursor and the completed ids but not objective *definitions*, so a stored
+ *    ladder would be lost on restart and regenerated ids would no longer match
+ *    the ones already sent to clients. Deriving them keeps a restart
+ *    byte-identical with nothing extra to save.
+ * 2. **Difficulty is capped** (see `tier`). An endless goal that scales forever
+ *    stops being a goal and becomes a chore, which is how endless modes die.
+ *
+ * Nothing here is self-reported. These run through the same `evaluate()` against
+ * the same world scan as the campaign, and still need a human touch to unlock --
+ * so bots cannot grind the tail on their own either.
+ */
+
+/** Material the tail can ask for, with a name that reads as a goal. */
+const ROLLING_MATERIALS = [
+  { id: 6, noun: 'gold', title: 'Gold Rush', brief: 'Gold is scarce here for a reason. Prove you can get more of it.' },
+  { id: 5, noun: 'cyan neon', title: 'Cold Light', brief: 'The lagoon should glow after dark.' },
+  { id: 8, noun: 'amber neon', title: 'Warm Glow', brief: 'Amber reads warmer than cyan. Use both.' },
+  { id: 2, noun: 'red brick', title: 'Brickwork', brief: 'Something load-bearing for once.' },
+  { id: 3, noun: 'oak wood', title: 'Timber Yard', brief: 'Wood everywhere -- this is an island.' },
+  { id: 7, noun: 'dark slate', title: 'Slate Roof', brief: 'Dark stone underneath all that sand.' },
+  { id: 9, noun: 'cyan glass', title: 'Clear Thinking', brief: 'Glass lets the light through and keeps the sand out.' },
+];
+
+/** Props the tail can ask for. All eight are buildable without a ladder to chase. */
+const ROLLING_PROPS = [
+  { key: 'bench', title: 'Somewhere to Sit', brief: 'A world nobody can sit in is a world nobody visits.' },
+  { key: 'table', title: 'Set the Table', brief: 'A surface to put things on is the beginning of a room.' },
+  { key: 'campfire', title: 'Keep the Fire', brief: 'Something warm to build around.' },
+  { key: 'parasol', title: 'Some Shade', brief: 'It is noon here. Get out of it.' },
+  { key: 'sign', title: 'Leave a Note', brief: 'The next builder should know what you were doing.' },
+  { key: 'chair', title: 'Pull Up a Chair', brief: 'One chair is a prop. Two is an invitation.' },
+  { key: 'torch', title: 'More Torches', brief: 'Torches need no base, so they can go anywhere.' },
+  { key: 'plant', title: 'More Green', brief: 'Something alive between all the stone.' },
+];
+
+/**
+ * How many tail objectives make a "round", purely for the client's kicker text.
+ * A round gives the endless mode a rhythm without pretending it has an ending.
+ */
+export const ROUND_SIZE = 4;
+
+/** Difficulty tier for tail objective `n`, capped so the tail never becomes a chore. */
+function tierFor(n) {
+  return 1 + Math.min(4, Math.floor(n / ROUND_SIZE));
+}
+
+const ROLLING_KINDS = [
+  /** More of a material the world is short of. */
+  (rand, tier, n) => {
+    const m = rand.pick(ROLLING_MATERIALS);
+    const goal = 8 + tier * 4 + Math.floor(rand.n() * 5);
+    return {
+      metric: METRIC.MATERIAL_COUNT, material: m.id, goal,
+      title: m.title, brief: m.brief, reward: `${goal} blocks of ${m.noun}.`,
+    };
+  },
+  /** More of a prop. These scale more gently: props are placeable in bulk. */
+  (rand, tier) => {
+    const p = rand.pick(ROLLING_PROPS);
+    const goal = 3 + tier * 2 + Math.floor(rand.n() * 3);
+    return {
+      metric: METRIC.PROP_COUNT, prop: p.key, goal,
+      title: p.title, brief: p.brief, reward: `${goal} of them now.`,
+    };
+  },
+  /** Taller. Never past WORLD.MAX_Y, which would be unsatisfiable. */
+  (rand, tier) => {
+    const titles = ['High Ground', 'Skyline', 'Above It All', 'Long View', 'The Long Shadow'];
+    const goal = Math.min(WORLD.MAX_Y - 1, 14 + tier * 4);
+    return {
+      metric: METRIC.COLUMN_HEIGHT, goal,
+      title: titles[tier - 1] ?? 'High Ground',
+      brief: `${goal} voxels, unbroken. A gap makes two shorter things.`,
+      reward: 'Visible from the far side of the lagoon.',
+    };
+  },
+  /** More humans. Capped at 5: past that it stops being a goal and becomes a wall. */
+  (rand, tier) => {
+    const goal = 3 + Math.min(2, tier - 1);
+    const titles = ['Bring a Friend', 'Full House'];
+    return {
+      metric: METRIC.DISTINCT_BUILDERS, goal,
+      title: titles[Math.min(titles.length - 1, tier - 1)],
+      brief: `${goal} different builders, each contributing something.`,
+      reward: 'Still a shared world, after all.',
+    };
+  },
+];
+
+/** 32-bit mix so `(seed, n)` is well spread without pulling in a hash library. */
+function hash32(seed, n) {
+  let h = (seed ^ 0x9e3779b9) >>> 0;
+  h = Math.imul(h ^ (n >>> 0), 0x85ebca6b) >>> 0;
+  h ^= h >>> 13;
+  h = Math.imul(h, 0xc2b2ae35) >>> 0;
+  h ^= h >>> 16;
+  return h >>> 0;
+}
+
+/**
+ * Mulberry32: 4 lines, good distribution for shuffling a 9-element array, and
+ * it produces the *same* stream on every platform because it is all 32-bit
+ * integer maths. Anything using `Math.random` here would silently regenerate a
+ * different ladder after every restart.
+ */
+function mulberry32(a) {
+  const next = () => {
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  next.n = () => next();
+  next.pick = (arr) => arr[Math.floor(next() * arr.length)];
+  return next;
+}
+
+/**
+ * The `n`-th objective of the endless tail (n = 0 is the one after `garden`).
+ *
+ * @param {number} seed stable per server, so a restart regenerates the same tail
+ * @param {number} n zero-based position in the tail
+ * @returns {object} shaped exactly like a campaign objective
+ */
+export function rollingObjective(seed = 0, n = 0) {
+  const rand = mulberry32(hash32(seed >>> 0, n >>> 0));
+  const tier = tierFor(n);
+  // Rotate through the kinds with a small jitter: `(n + 0..2) % kinds` always
+  // differs from the same expression at `n + 1`, so a kind never repeats twice in
+  // a row, while the jitter stops it reading as a fixed cycle.
+  const kind = ROLLING_KINDS[(n + Math.floor(rand() * 3)) % ROLLING_KINDS.length];
+  return { id: `rolling_${n}`, rolling: true, ...kind(rand, tier, n) };
+}
+
+/**
+ * Round number a tail index belongs to, for the panel's kicker.
+ *
+ * Takes only the index, deliberately: `Array.prototype.map(roundOf)` would pass
+ * the array position as a second argument, and a defaulted parameter would
+ * silently swallow it and return a wrong round for every element.
+ *
+ * @param {number} index absolute ladder index
+ */
+export function roundOf(index) {
+  if (index < CAMPAIGN_LENGTH) return 0;
+  return Math.floor((index - CAMPAIGN_LENGTH) / ROUND_SIZE) + 1;
 }

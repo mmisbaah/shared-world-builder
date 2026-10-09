@@ -310,13 +310,28 @@ async function main() {
     sawObjective = true;
     const completedId = objectivePanel.update(conn.objectives);
     if (completedId) {
-      const def = conn.objectives?.active?.find((o) => o.id === completedId);
+      const p = conn.objectives;
+      const def = p?.active?.find((o) => o.id === completedId);
       objectiveBanner.show(def);
       hud.log(`objective complete: ${def?.title ?? completedId}`, 'good');
       // Deliberately outside the voice budget: this is the reward, it is not
       // something the player caused directly, and a busy stretch of bot building
       // must never be able to swallow it.
       sfx.play(SFX.OBJECTIVE, { gain: 1 });
+
+      // Crossing out of the scripted campaign into the endless tail is the one
+      // transition that only ever happens once, so it gets its own sting and its
+      // own banner. Both are *chained* onto the normal reward rather than placed
+      // beside it: two celebrations at the same instant read as one louder
+      // noise, and neither sentence gets read. The id check is what keeps a
+      // routine tail completion from ever re-triggering this.
+      const doneIdx = p?.active?.findIndex((o) => o.id === completedId) ?? -1;
+      const campaign = typeof p?.campaign === 'number' ? p.campaign : -1;
+      if (campaign >= 0 && doneIdx === campaign - 1) {
+        setTimeout(() => sfx.play(SFX.VICTORY, { gain: 1 }), 550);
+        hud.log('campaign complete — endless objectives begin', 'good');
+        setTimeout(() => objectiveBanner.showCampaign(), 4400);
+      }
     }
   });
 

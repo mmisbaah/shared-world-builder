@@ -18,7 +18,20 @@
  *   builders would make the objective flicker as people come and went.
  */
 
-import { OBJECTIVES, scanWorld, evaluate, toWire } from '../shared/objectives.js';
+import {
+  OBJECTIVES, CAMPAIGN_LENGTH, rollingObjective, scanWorld, evaluate, toWire,
+} from '../shared/objectives.js';
+
+/**
+ * How far past the cursor the endless tail is generated.
+ *
+ * Three, so the client's rail can show what is coming next and read as "and more
+ * to come" -- but deliberately not unbounded. Objectives are broadcast every
+ * second to every client, so a tail generated in full would grow the payload with
+ * the length of the session until the thing that was meant to encourage a return
+ * visit became the reason the frame hitched.
+ */
+const TAIL_AHEAD = 3;
 
 export class ObjectiveTracker {
   /**
@@ -52,6 +65,47 @@ export class ObjectiveTracker {
     this.wire = toWire(OBJECTIVES, 0, [], emptyScan(), { tallest: 0 });
     /** Callbacks fired when an objective completes, so the host can celebrate. */
     this.onComplete = null;
+    /**
+     * Fired exactly once, when the cursor crosses out of the scripted campaign
+     * and into the endless tail. Separate from `onComplete` because that fires
+     * for tail objectives too, and a fanfare on every ninth block would stop
+     * meaning anything by the third one.
+     */
+    this.onCampaignComplete = null;
+    /**
+     * Seed for the endless tail.
+     *
+     * Persistence saves the cursor and the completed ids but not objective
+     * definitions, so the tail has to be *derivable* rather than stored: the same
+     * seed regenerates the same ids after a restart, which is what keeps the
+     * client's `completed` list agreeing with the `active` list it is displayed
+     * against. Change this and every tail id the client has seen goes stale.
+     */
+    this.seed = 1;
+  }
+
+  /**
+   * The ladder as far ahead as it is generated.
+   *
+   * The scripted campaign, then a short window of tail objectives once the cursor
+   * reaches it. The window is built from the *current* cursor, so at index 7 the
+   * array already has entries at 8 and 9 -- without which the panel would render
+   * "Ladder complete" for one tick between finishing `garden` and the next
+   * evaluation handing it a real goal.
+   *
+   * Tail entries are regenerated from `seed` on every call rather than cached,
+   * which is what makes a restarted server pick up mid-tail with ids that still
+   * match what clients were already told.
+   *
+   * @returns {object[]} campaign followed by generated tail entries
+   */
+  ladder() {
+    const total = Math.max(OBJECTIVES.length, this.index + TAIL_AHEAD);
+    const out = OBJECTIVES.slice();
+    for (let n = OBJECTIVES.length; n < total; n++) {
+      out.push(rollingObjective(this.seed, n - OBJECTIVES.length));
+    }
+    return out;
   }
 
   /** @param {string} builderId */
@@ -111,10 +165,18 @@ export class ObjectiveTracker {
     const scan = scanWorld(this.authority.chunks.values(), this._props(), this.contributors);
     const changed = [];
 
+    // Resolved once and walked, not rebuilt each iteration. Advancing the cursor
+    // must not keep extending the array it is walking: because `ladder()` grows
+    // with `this.index`, rebuilding inside the loop would mean every completed
+    // objective hands back one more, and a world whose goals are all already met
+    // would advance forever.
+    const ladder = this.ladder();
+    const wasInCampaign = this.index < CAMPAIGN_LENGTH;
+
     // Guard against a malformed ladder looping forever.
-    for (let guard = 0; guard < OBJECTIVES.length; guard++) {
-      if (this.index >= OBJECTIVES.length) break;
-      const active = OBJECTIVES[this.index];
+    for (let guard = 0; guard < ladder.length; guard++) {
+      if (this.index >= ladder.length) break;
+      const active = ladder[this.index];
       const verdict = evaluate(active, scan, scan);
 
       // The metric alone is not enough. An objective also needs a human to have
@@ -133,7 +195,15 @@ export class ObjectiveTracker {
       // A new objective starts locked until a human acts on it.
     }
 
-    this.wire = toWire(OBJECTIVES, this.index, this.completed, scan, scan);
+    this.wire = toWire(ladder, this.index, this.completed, scan, scan);
+
+    // Crossing out of the scripted campaign is a one-off moment worth its own
+    // celebration. Every tail objective after it is just another step and goes
+    // through `onComplete` like any other -- firing this repeatedly would make
+    // the boundary stop feeling like one.
+    if (wasInCampaign && this.index >= CAMPAIGN_LENGTH) {
+      this.onCampaignComplete?.(this.completed);
+    }
 
     for (const objective of changed) {
       this.onComplete?.(objective, scan);

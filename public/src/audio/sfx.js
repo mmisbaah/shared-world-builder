@@ -476,6 +476,38 @@ export class Sfx {
     return this._emit(voices, pan);
   }
 
+  /**
+   * The scripted campaign is over.
+   *
+   * Deliberately not a louder `_objective`. That plays a four-note arpeggio,
+   * which reads as a *step* -- right for a rolling goal that will happen many
+   * more times, wrong for the one boundary the whole ladder builds toward. This
+   * resolves instead: a bass note held under the entire figure so the first beat
+   * lands as a chord rather than as a tempo, and a long decay so the last note
+   * has somewhere to go. It is the only voice in the game that is not reporting
+   * something a builder just did.
+   */
+  _victory(t, { gain, pan = 0 }) {
+    const root = 523.25; // C5
+    // C5 E5 G5 C6 G5 C6 -- arches back through the fifth before the octave, so
+    // the ending sits on the tonic twice instead of simply running out of notes.
+    const steps = [0, 4, 7, 12, 7, 12];
+    const voices = [];
+    voices.push(this._tone(t, {
+      freq: root / 2, type: 'sine', peak: gain * 0.10, attack: 0.02, decay: 2.0,
+    }));
+    steps.forEach((semi, i) => {
+      const f = root * Math.pow(2, semi / 12);
+      voices.push(this._tone(t + i * 0.115, {
+        freq: f, type: 'sine', peak: gain * 0.16, attack: 0.006, decay: 1.0,
+      }));
+      voices.push(this._tone(t + i * 0.115, {
+        freq: f * 2, type: 'triangle', peak: gain * 0.055, attack: 0.006, decay: 0.6,
+      }));
+    });
+    return this._emit(voices, pan);
+  }
+
   _ui(t, { gain = 0.5, pitch = 1 }) {
     return this._emit([
       this._tone(t, { freq: 660 * pitch, type: 'sine', peak: gain * 0.09, attack: 0.002, decay: 0.06 }),
@@ -546,6 +578,8 @@ export class Sfx {
         return this._conflict(t, { gain, pan });
       case SFX.OBJECTIVE:
         return this._objective(t, { gain });
+      case SFX.VICTORY:
+        return this._victory(t, { gain });
       case SFX.UI:
         return this._ui(t, { gain, pitch });
       case SFX.READY:

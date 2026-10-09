@@ -37,6 +37,8 @@ export const SFX = {
   CONFLICT: 'conflict',
   /** A shared objective completed. */
   OBJECTIVE: 'objective',
+  /** The scripted campaign is over. Longer and more resolved than OBJECTIVE. */
+  VICTORY: 'victory',
   /** Interface feedback. */
   UI: 'ui',
   /** The world finished loading. */

@@ -340,7 +340,7 @@ test('every declared sound has a handler', () => {
   const handled = new Set([
     SFX.PLACE, SFX.PLACE_REMOTE, SFX.REMOVE, SFX.REMOVE_REMOTE,
     SFX.PROP, SFX.PROP_REMOTE, SFX.DENY, SFX.CONFLICT,
-    SFX.OBJECTIVE, SFX.UI, SFX.READY,
+    SFX.OBJECTIVE, SFX.VICTORY, SFX.UI, SFX.READY,
   ]);
   for (const name of Object.values(SFX)) {
     assert.ok(handled.has(name), `${name} is declared but nothing plays it`);

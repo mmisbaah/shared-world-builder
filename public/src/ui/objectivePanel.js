@@ -11,6 +11,7 @@
  */
 
 import { escapeHtml } from './hud.js';
+import { roundOf } from '../../../shared/objectives.js';
 
 export class ObjectivePanel {
   /** @param {HTMLElement} root */
@@ -45,9 +46,23 @@ export class ObjectivePanel {
     }
 
     const done = p.completed.length;
-    const total = p.total;
     const active = p.active?.[p.index] ?? null;
     const allDone = !active;
+    /**
+     * Two phases, and they want different things said.
+     *
+     * During the campaign "Objective 4 of 8" means something, because 8 is a
+     * finish line. Past it the tail is generated only a few objectives ahead, so
+     * `total` really means "defined so far" -- printing "Objective 12 of 15"
+     * would promise an ending that moves every time you get near it. So the
+     * campaign counts down to a number and the tail reports a round instead,
+     * which is honest about having none.
+     */
+    const campaign = typeof p.campaign === 'number' ? p.campaign : (p.active?.length ?? 0);
+    const inTail = p.index >= campaign;
+    const kicker = inTail
+      ? `Endless &middot; round ${roundOf(p.index)} &middot; objective ${p.index + 1} &middot; ${done} done`
+      : `Objective ${p.index + 1} of ${Math.min(p.total, campaign)} &middot; ${done} done`;
     /**
      * Server says the metric is met but no human has touched this objective, so
      * it is deliberately being held. Showing a full bar with no completion and no
@@ -63,6 +78,10 @@ export class ObjectivePanel {
       return `<i class="${cls}" title="${escapeHtml(o.title)}"></i>`;
     }).join('');
 
+    // Only reachable if a payload arrives without an entry at the cursor --
+    // the ladder is always generated a few ahead of it, so in normal operation
+    // there is always a next goal. Kept because an empty panel would be a
+    // silent failure, and this says what happened instead.
     const card = allDone
       ? `<div class="obj-card done">
            <div class="obj-kicker">Ladder complete</div>
@@ -70,7 +89,7 @@ export class ObjectivePanel {
            <p>Every shared goal is met. Keep building &mdash; nothing here is capped.</p>
          </div>`
       : `<div class="obj-card${waiting ? ' waiting' : ''}">
-           <div class="obj-kicker">Objective ${p.index + 1} of ${total} &middot; ${done} done</div>
+           <div class="obj-kicker">${kicker}</div>
            <h3>${escapeHtml(active.title)}</h3>
            <p>${escapeHtml(active.brief)}</p>
            <div class="obj-bar" role="progressbar" aria-valuenow="${active.current}"
@@ -119,11 +138,34 @@ export class ObjectiveBanner {
   /** @param {object} objective @param {(o:object)=>string} byId */
   show(objective, byId) {
     if (!objective) return;
-    this.el.innerHTML = `
+    this._show(`
       <div class="obj-banner-kicker">Objective complete</div>
       <div class="obj-banner-title">${escapeHtml(objective.title)}</div>
       ${objective.reward ? `<div class="obj-banner-reward">${escapeHtml(objective.reward)}</div>` : ''}
-    `;
+    `, 4200);
+  }
+
+  /**
+   * The scripted ladder is finished and the endless tail has begun.
+   *
+   * Deliberately shown *after* the final objective's own banner rather than
+   * instead of it. The last campaign goal still deserves to be read as a goal,
+   * and two banners fighting for the same slot would mean neither sentence
+   * landed -- so the caller waits one banner's worth of time before calling
+   * this. Longer duration too: it is the only one of these that is not
+   * followed by another one in about a minute.
+   */
+  showCampaign() {
+    this._show(`
+      <div class="obj-banner-kicker">Campaign complete</div>
+      <div class="obj-banner-title">The plaza is finished</div>
+      <div class="obj-banner-reward">Every scripted goal is met. Endless objectives begin now &mdash; nothing here is capped.</div>
+    `, 7000);
+  }
+
+  /** @param {string} html @param {number} ms time on screen before it retires */
+  _show(html, ms) {
+    this.el.innerHTML = html;
     this.el.hidden = false;
     // Restart the animation: without forcing a reflow, re-showing an already-visible
     // element does not replay the CSS entry transition.
@@ -135,6 +177,6 @@ export class ObjectiveBanner {
     this.timer = setTimeout(() => {
       this.el.classList.remove('show');
       setTimeout(() => { this.el.hidden = true; }, 400);
-    }, 4200);
+    }, ms);
   }
 }
