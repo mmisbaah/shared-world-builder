@@ -860,6 +860,81 @@ reopens — the first sample fires and then the bed freezes. Passing a real
 `performance.now()` fixed the harness. The production loop is unaffected; this only
 bites headless verification.
 
+## Attribution on screen: who built this place
+
+The audio section states its design goal as telling you *who changed the world
+near me*. That was the only half of the answer in the game — there was nothing
+on screen, and a co-op builder where you cannot tell what anyone else has done
+is a single-player game with extra people standing in it.
+
+Two pieces, asking the same question at different distances.
+
+**How much has each builder done.** A count on every row of the Co-op builders
+panel, counted on the server in `record()` rather than from whatever each client
+happens to witness — two people comparing the same panel must not be able to see
+two different numbers for the same fact.
+
+`record()` is the single funnel every write in the server goes through, and
+every call site sets its own writer inside the callback, so it counts players,
+bots and undo alike. The bot half matters more than it looks: bots never produce
+an operation, they write through `commitAs`/`removeAs`, so a tally hung off
+`apply()` would have left the four busiest hands in the world out of the
+attribution entirely.
+
+The subtlety is that a delta packet is *cumulative* across a tick — several
+mutations to the same chunk collapse into one — so `d.by` after a mutation names
+whoever wrote last. Without clearing it first, the second builder to write into
+one packet is never observed at all while the first is credited for both. That
+change was green on its first test run either way, which is exactly why there is
+a test that puts two builders in one tick and checks both counts.
+
+Presence, the message carrying these numbers, used to be sent only when the
+roster changed — fine for names, useless for a number. A counter that moves when
+somebody joins is a decoration. It now goes out when the tally moves.
+
+**Who built the block under your cursor.** A label by the pointer, name and
+colour, following it across the viewport and clamped to the edges. Props answer
+from the authorship that has always been stored in the world: a prop record
+carries `by`, so a teammate's lantern is named correctly however long ago it was
+placed.
+
+Blocks cannot answer that way. A chunk holds materials and revisions and nothing
+about who wrote them, and adding a third array would mean a snapshot format
+change and a version bump that quarantines every saved world. So the client keeps
+a bounded map of the edits it witnessed, keyed `x,y,z`, evicting
+least-recently-changed.
+
+That is deliberately all it claims. Generated terrain has no author, and a block
+placed before you joined has one you were not there to see; both show as nothing,
+because a guess would be worse than a blank. Removals are not recorded either —
+once the voxel is air there is nothing left to aim at, so remembering it would
+spend the budget on entries nothing can ever look up.
+
+The label appearing only when authorship is known turned out to be the right
+behaviour rather than an apology: hovering your wall names you, hovering a bot's
+tower names the bot, and hovering the island names nobody, because nobody built
+the island. `builder()` — the id → name/colour lookup — now searches the bot
+roster as well, and it had no callers at all before this; an attribution that
+answered for people and shrugged for the bots would name less than half of what
+is on screen.
+
+Every bot count read zero on the first live run, which was the panel being
+right about something else entirely: past the campaign the active objective is a
+*generated* tail entry, `intentFor` looked it up in the static `OBJECTIVES`
+table, missed, and fell through to the idle branch — four bots standing about
+"tidying up" the moment the victory banner appeared. The same mistake in
+`noteHumanContribution` meant the tail could never be unlocked either, because
+`evaluate()` checks `humanTouched` against the *ladder* and the scripted index
+was out of range. Together they made the endless ladder a dead end: a goal
+announced, and nothing that could ever finish it. Both fixed; intents went from
+fourfold "tidying up" to "placing Energy Lantern" and bot commits moved 0 → 60
+in the same window.
+
+Verified live after that: counts moved 15 → 25, 12 → 18 and 9 → 17 over
+fourteen seconds, a pillar I had just built read my own name at the right offset
+from the pointer, bare terrain showed nothing, a bot's lantern read
+*Zen_Architect*, and leaving the canvas cleared the label.
+
 ## Point lights: three silent decode bugs
 
 Lanterns rendered for the entire life of this feature and lit nothing. There were
@@ -1263,11 +1338,11 @@ Stated plainly rather than overclaimed:
 
 ## Tests
 
-499 tests, `node --test test/`, all passing. They cover the layers that are easy
+524 tests, `node --test test/`, all passing. They cover the layers that are easy
 to get subtly wrong:
 
 - `coach` (33) - every step's requirement being something the player can always do, ids matching what they wait for, no two consecutive steps sharing a signal, one step per pump rather than collapsing, per-step independence, clicks on a re-rendered panel, and persistence through an injected store
-- `bots` (59) - goal derivation and district ownership, a specialism never diverting from the shared objective, prop-site legality, the satisfaction guard, the timer leak that hung this file, bots counting as distinct builders so a solo player is not stuck at `Room For Everyone`, and the territory work: each bot claiming a distinct quarter, staying inside it (78 of 84 commits), relocating when its ground is taken, and releasing claims on pause and dispose. It also covers the three renderer faults above, because `props.js` and `bots.js` were the two halves of one bug: the bots produced the 9,650 props that the renderer then failed to draw
+- `bots` (62) - goal derivation and district ownership, a specialism never diverting from the shared objective, prop-site legality, the satisfaction guard, the timer leak that hung this file, bots counting as distinct builders so a solo player is not stuck at `Room For Everyone`, and the territory work: each bot claiming a distinct quarter, staying inside it (78 of 84 commits), relocating when its ground is taken, and releasing claims on pause and dispose. It also covers the three renderer faults above, because `props.js` and `bots.js` were the two halves of one bug: the bots produced the 9,650 props that the renderer then failed to draw, and the endless tail: a generated objective yielding work rather than the idle branch, the definition form and the scripted id form agreeing for the scripted eight, and a swarm asked for its intent at `CAMPAIGN_LENGTH` not standing down
 - `territory` (32) - what a claim does and does not cover, the grace window appearing
   before expiry, renewal from the commit path (and *only* from a successful commit),
   a claimed district being freed but its blocks left standing, another builder taking
@@ -1275,7 +1350,7 @@ to get subtly wrong:
   every restored-claim shape — malformed entries dropped, size clamped, clock not
   resumed
 
-- `objectives` (40) — the world scan (full-height columns, contiguous runs,
+- `objectives` (43) — the world scan (full-height columns, contiguous runs,
   per-chunk indexing), every metric, monotonic completion, bounded ladder advance,
   the wire format surviving a JSON round-trip, and the endless tail: each
   objective being a pure function of `(seed, n)` with ids that never collide,
@@ -1283,7 +1358,11 @@ to get subtly wrong:
   `map`, the campaign handing over with no empty tick in between, `onCampaignComplete`
   firing once and only once, and a restarted server regenerating an identical tail
   so the completed ids it restored are still findable in the ladder they are
-  rendered against
+  rendered against, and the unlock gate reaching that tail at all: every index
+  on the ladder reporting itself and unlocking from a human touch, and
+  `currentObjective` reading the ladder rather than the eight scripted entries
+  (indexing `OBJECTIVES` by position is out of range past the campaign, which
+  is how the tail became completable only after that test existed)
 
 - `audioEvents` (24) — the event-to-sound mapping: the double-strike guard that keeps
   one placement from sounding twice, block-versus-prop, bot intent announcements
@@ -1323,13 +1402,22 @@ to get subtly wrong:
 - `picking` (27) — DDA traversal, entry normals, zero-component rays, non-finite
   direction rejection, prop AABBs, placement always landing in air, and a prop hit
   carrying the face it was entered through rather than undefined
-- `connection` (50) — every reconciliation path, out-of-order answers, timeouts,
+- `hud` (8) — the builders panel, where attribution actually becomes readable:
+  a count on every row, one edit phrased as one rather than as "1 edits", an
+  absent or malformed count reading as zero rather than `NaN`, your own row
+  marked out from everyone else's, a bot's intent and specialism surviving the
+  row gaining a second figure, a name that cannot inject markup into the panel,
+  and an empty world still saying so
+- `connection` (56) — every reconciliation path, out-of-order answers, timeouts,
   disconnects, snapshot round trip, probe/op id disjointness, and the undo count
   moving only on acknowledgement, following a refusal down (a refused entry is
   spent), zeroing on an empty stack rather than decrementing, capping at the depth
   the server actually keeps, and `_settle`/`_reject` ignoring an op that carries
-  no coordinates of its own
-- `authority` (28) — races, optimistic concurrency, locks, zones, rate limiting,
+  no coordinates of its own. Plus the hover attribution map: the newest author
+  winning a rebuilt voxel, our own edits recorded as well as everyone else's,
+  a removal spending no budget, the bound evicting the least recently changed
+  voxel, and an id resolving for bots
+- `authority` (33) — races, optimistic concurrency, locks, zones, rate limiting,
   full-height columns, and undo: restoring a placement and a removal with the
   material that was actually there, walking backward through successive edits
   instead of toggling the newest one, two edits to one voxel both being reachable,
@@ -1338,4 +1426,9 @@ to get subtly wrong:
   builder that another builder's edit cannot be named even implicitly, a refusal
   spending its entry so the stack cannot freeze behind it, the cap dropping the
   oldest edits first, and props reverting in both directions with rotation and
-  attribution intact
+  attribution intact. Then the contribution tally behind the builders panel:
+  every edit counted for whoever made it, **two builders writing in one tick
+  counted separately** (the delta is cumulative across the tick, so the writer
+  has to be cleared first or the first builder is credited for both and the
+  second never observed), a record that names nobody crediting nobody, bots
+  counted even though they never produce an operation, and undo counted

@@ -177,6 +177,14 @@
 
 <div id="toasts" class="toasts"></div>
 
+<!-- Hover attribution ----------------------------------------------------
+     Names whoever last changed the voxel under the cursor. It is a fixed
+     overlay rather than a child of a panel because it has to follow the pointer
+     anywhere over the viewport, and it is deliberately never interactive: a
+     label you must move away to dismiss sits in front of the very block it is
+     describing. -->
+<div id="who" class="who-tip" hidden></div>
+
 <div id="stats" class="stats mono hidden"></div>
 
 <script type="module" src="/src/main.js"></script>

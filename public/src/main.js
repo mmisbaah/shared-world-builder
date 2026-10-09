@@ -423,6 +423,59 @@ async function main() {
   // --- pointer -------------------------------------------------------------
   const canvas = ctx.renderer.domElement;
 
+  // --- hover attribution ---------------------------------------------------
+  //
+  // The screen half of what the audio does: a sound tells you who changed the
+  // world *near* you, and this names whoever changed the one you are aiming at.
+  // Props answer from the authorship stored in the world itself; blocks answer
+  // from the edits this client witnessed, which is deliberately all it claims --
+  // see `Connection#authors`.
+  const whoTip = document.getElementById('who');
+  let whoTipId = '';
+
+  function authorAt(hit) {
+    if (!hit) return null;
+    if (hit.kind === 'ground') return null; // generated terrain, nobody built it
+    if (hit.kind === 'prop') return world.getProp(hit.x, hit.y, hit.z)?.by ?? null;
+    return conn.authorOf(hit.x, hit.y, hit.z);
+  }
+
+  function updateWhoTip(hit, cx, cy) {
+    if (!whoTip) return;
+    const who = conn.builder(authorAt(hit));
+    const id = who ? who.id : '';
+    if (id !== whoTipId) {
+      whoTipId = id;
+      if (!who) {
+        whoTip.hidden = true;
+      } else {
+        const sw = document.createElement('i');
+        sw.className = 'swatch';
+        // Colours arrive from the server, so the hex is checked rather than
+        // trusted: unlike a text node, a CSS value can name a resource, and this
+        // is the one place a builder's colour is applied from a raw string.
+        sw.style.backgroundColor = /^#[0-9a-fA-F]{3,8}$/.test(String(who.color))
+          ? who.color : '#9ca3af';
+        const name = document.createElement('span');
+        name.textContent = who.name;
+        whoTip.replaceChildren(sw, name);
+        whoTip.hidden = false;
+      }
+    }
+    if (whoTip.hidden) return;
+    // Clamped to the viewport: naming the block you are aiming at is worth
+    // nothing if the label sits half off the edge or under the cursor.
+    const w = whoTip.offsetWidth;
+    const h = whoTip.offsetHeight;
+    const x = Math.min(cx + 16, window.innerWidth - w - 8);
+    const y = Math.min(cy + 20, window.innerHeight - h - 8);
+    whoTip.style.transform = `translate(${Math.max(8, x)}px, ${Math.max(8, y)}px)`;
+  }
+
+  // Leaving the canvas would otherwise strand the label at the last cell the
+  // pointer was over, describing a block nobody is looking at any more.
+  canvas.addEventListener('pointerleave', () => updateWhoTip(null, 0, 0));
+
   function updateHover(event) {
     pointerNdc(event, canvas, ndc);
     raycaster.setFromCamera(ndc, ctx.camera);
@@ -431,6 +484,7 @@ async function main() {
 
     const hit = pick(world, origin, direction, { maxDist: 120 });
     state.hover = hit;
+    updateWhoTip(hit, event.clientX, event.clientY);
     if (hit) conn.sendCursor(hit);
     if (!hit) { state.ghost = null; return; }
 

@@ -48,6 +48,17 @@ export class Authority {
      * @type {Map<string, object[]>}
      */
     this.undoStacks = new Map();
+    /**
+     * How many edits each builder has made, for showing attribution on screen.
+     *
+     * Counted in `record()` rather than in `apply()` so that bots -- which write
+     * through `commitAs`/`removeAs` and never produce an operation -- are counted
+     * exactly as players are. A tally that silently omitted half the builders in
+     * a co-op world would be worse than showing none at all.
+     *
+     * @type {Map<string, number>}
+     */
+    this.edits = new Map();
   }
 
   // -------------------------------------------------------------------------
@@ -137,6 +148,13 @@ export class Authority {
   /**
    * Record a settled change for broadcast. Multiple mutations to the same chunk
    * inside one tick collapse into a single delta packet.
+   *
+   * `d` is cumulative across the tick, so `d.by` would otherwise name whoever
+   * wrote into this packet *last* rather than whoever writes into it now. Clearing
+   * it first makes the tally below count this mutation and not the previous one,
+   * and it costs nothing today because every call site sets its own writer --
+   * but a future one that forgot would now contribute nothing rather than
+   * crediting the builder before it.
    */
   record(cx, cz, mutate) {
     const key = chunkKey(cx, cz);
@@ -145,7 +163,9 @@ export class Authority {
       d = { cx, cz, rev: 0, blocks: [], props: [], propsRemoved: [], by: null };
       this.pending.set(key, d);
     }
+    d.by = null;
     mutate(d);
+    if (d.by) this.edits.set(d.by, (this.edits.get(d.by) ?? 0) + 1);
     return d;
   }
 

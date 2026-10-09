@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 
 import { World } from '../public/src/world/world.js';
 import { Connection } from '../public/src/net/connection.js';
-import { OP, DENY, EV, CHUNK_SIZE, voxelIndex, encodeCells, decodeCells, UNDO_DEPTH } from '../shared/protocol.js';
+import { OP, DENY, EV, CHUNK_SIZE, voxelIndex, encodeCells, decodeCells, UNDO_DEPTH, WORLD } from '../shared/protocol.js';
+import { AUTHOR_CAP } from '../public/src/net/connection.js';
 
 const STONE = 1;
 const BRICK = 2;
@@ -663,4 +664,67 @@ test('rollback paths ignore an op that never predicted anything', () => {
 
   assert.equal(conn.drainEvents().length, before, 'nothing was rolled back or reported');
   assert.equal(world.hasPrediction(0, 1, 0), false, 'no phantom overlay appeared');
+});
+
+// ---------------------------------------------------------------------------
+// Attribution (hover readout)
+// ---------------------------------------------------------------------------
+
+test('a witnessed edit is attributed to whoever made it', () => {
+  const { conn } = harness();
+  assert.equal(conn.authorOf(2, 4, 2), null,
+    'unwitnessed work is unattributed, never guessed');
+
+  conn._onDelta(delta(0, 0, [[voxelIndex(2, 4, 2), STONE, 7]], 'b_me'));
+  assert.equal(conn.authorOf(2, 4, 2), 'b_me');
+});
+
+test('the newest author wins when a voxel is rebuilt', () => {
+  const { conn } = harness();
+  conn._onDelta(delta(0, 0, [[voxelIndex(2, 4, 2), STONE, 7]], 'b_me'));
+  conn._onDelta(delta(0, 0, [[voxelIndex(2, 4, 2), BRICK, 9]], 'bot_maya'));
+  assert.equal(conn.authorOf(2, 4, 2), 'bot_maya');
+});
+
+test('our own edits are recorded too', () => {
+  // Knowing you built the wall you are aiming at is the whole point of the
+  // readout, not a special case to be filtered out.
+  const { conn } = harness();
+  conn._onDelta(delta(0, 0, [[voxelIndex(1, 1, 1), STONE, 3]], 'b_me'));
+  assert.equal(conn.authorOf(1, 1, 1), 'b_me');
+});
+
+test('a removal spends no attribution budget', () => {
+  // Once the voxel is air there is nothing left to aim at, so recording it
+  // would evict a block that still exists in favour of one that does not.
+  const { conn } = harness();
+  conn._onDelta(delta(0, 0, [[voxelIndex(2, 4, 2), 0, 7]], 'b_me'));
+  assert.equal(conn.authorOf(2, 4, 2), null);
+  assert.equal(conn.authors.size, 0);
+});
+
+test('authorship is bounded and evicts the least recently changed voxel', () => {
+  const { conn } = harness();
+  const oldestY = WORLD.MAX_Y - 1;
+  const oldest = [voxelIndex(15, oldestY, 15), STONE, 1];
+  const filler = [];
+  for (let i = 0; i < AUTHOR_CAP + 8; i++) filler.push([i, STONE, 1]);
+
+  conn._onDelta(delta(0, 0, [oldest, ...filler], 'b_me'));
+
+  assert.equal(conn.authors.size, AUTHOR_CAP, 'the map never grows past its budget');
+  assert.equal(conn.authorOf(15, oldestY, 15), null, 'the oldest attribution fell off');
+});
+
+test('a builder id resolves for bots as well as for people', () => {
+  // The busiest hands in this world belong to four bots, so an attribution that
+  // answered for people and shrugged for them would name less than half the work.
+  const { conn } = harness();
+  conn.bots = [{ id: 'bot_maya', name: 'Maya_Craft', color: '#a855f7' }];
+  conn.builders.set('b_x', { id: 'b_x', name: 'Someone', color: '#0ff' });
+
+  assert.equal(conn.builder('bot_maya').name, 'Maya_Craft');
+  assert.equal(conn.builder('b_x').name, 'Someone');
+  assert.equal(conn.builder('nobody'), null);
+  assert.equal(conn.builder(null), null, 'and an absent id is not a lookup');
 });

@@ -460,6 +460,45 @@ body.no-select { user-select: none; }
 }
 /* Builder roster rows */
 .list .row { display: flex; align-items: baseline; gap: 6px; padding: 2.5px 0; }
+
+/* Contribution count, pinned to the right of its row. Tabular figures so the
+   column does not dance as the number grows -- a count that jitters reads as
+   noise rather than as a figure anybody should look at. */
+.list .count {
+  margin-left: auto; flex: none;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 9.5px; font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: .02em;
+  color: var(--dim);
+}
+/* Your own row is the one you are actually reading for; everyone else's is
+   context. Bots stay on the dim colour because their rows already are. */
+.list .row.me .count { color: var(--cyan); }
+
+/* --------------------------------------------------- hover attribution -- */
+/* Who last changed the voxel under the cursor: the screen half of what the
+   audio does, which tells you the same thing about the world near you. */
+.who-tip {
+  position: fixed; left: 0; top: 0; z-index: 60;
+  display: flex; align-items: center; gap: 6px;
+  padding: 4px 10px; border-radius: 999px;
+  background: rgba(9,13,24,.88);
+  border: 1px solid var(--stroke-strong);
+  font-size: 10.5px; font-weight: 600; letter-spacing: .01em;
+  color: var(--text); white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 0 6px 18px rgba(0,0,0,.5);
+}
+.who-tip .swatch {
+  width: 7px; height: 7px; border-radius: 50%; flex: none;
+  box-shadow: 0 0 8px currentColor;
+}
+/* `display: flex` above beats the UA rule for [hidden], so the toggle is
+   written out explicitly -- without it the label would sit at translate(0,0)
+   forever instead of disappearing. */
+.who-tip[hidden] { display: none; }
+
 .list .bot-body { display: flex; align-items: baseline; gap: 4px; flex-wrap: wrap; min-width: 0; }
 /* What a bot is doing, from the objective it derives its intent from. Kept dim so
    it reads as annotation under the name rather than as the primary content. */

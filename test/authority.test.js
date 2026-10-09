@@ -407,3 +407,67 @@ test('undo cannot delete a prop somebody else put in the same spot', () => {
   assert.equal(r.ok, false, 'it is no longer my lantern');
   assert.equal(a.chunk(0, 0).props.get(key).prop, 'chair', 'their chair stands');
 });
+
+// ---------------------------------------------------------------------------
+// Contribution tally (attribution on screen)
+// ---------------------------------------------------------------------------
+
+test('every edit counts, for whoever made it', () => {
+  const a = makeWorld();
+  assert.equal(a.edits.size, 0, 'a world nobody has touched credits nobody');
+
+  a.apply({ id: ++seq, t: OP.PLACE_BLOCK, x: 0, y: 1, z: 0, mat: 1 }, ME);
+  assert.equal(a.edits.get(ME.id), 1);
+
+  a.apply({ id: ++seq, t: OP.PLACE_BLOCK, x: 1, y: 1, z: 0, mat: 1 }, ME);
+  a.apply({ id: ++seq, t: OP.REMOVE_BLOCK, x: 1, y: 1, z: 0 }, ME);
+  assert.equal(a.edits.get(ME.id), 3, 'a removal is work too');
+
+  // Props need solid ground beneath them, so that is two more edits before the
+  // prop itself: the ground counts as much as the chair standing on it.
+  a.apply({ id: ++seq, t: OP.PLACE_BLOCK, x: 5, y: 0, z: 0, mat: 1 }, ME);
+  const put = a.apply({ id: ++seq, t: OP.PLACE_PROP, x: 5, y: 1, z: 0, prop: 'chair', rot: 0 }, ME);
+  assert.ok(put.ok, put.reason);
+  assert.equal(a.edits.get(ME.id), 5);
+});
+
+test('two builders writing in one tick are counted separately', () => {
+  // The hazard: deltas are cumulative across the tick, so both of these share a
+  // packet. Without clearing the writer first, the second edit would never be
+  // observed at all and the first would be credited for both.
+  const a = makeWorld();
+  a.apply({ id: ++seq, t: OP.PLACE_BLOCK, x: 0, y: 1, z: 0, mat: 1 }, ME);
+  a.apply({ id: ++seq, t: OP.PLACE_BLOCK, x: 1, y: 1, z: 0, mat: 1 }, THEM);
+  assert.equal(a.edits.get(ME.id), 1, 'not credited for their edit');
+  assert.equal(a.edits.get(THEM.id), 1, 'and not skipped either');
+});
+
+test('a record that never names a writer credits nobody', () => {
+  // A future call site that forgot `d.by` must contribute nothing rather than
+  // silently crediting whoever wrote into that packet before it.
+  const a = makeWorld();
+  a.apply({ id: ++seq, t: OP.PLACE_BLOCK, x: 0, y: 1, z: 0, mat: 1 }, ME);
+  assert.equal(a.edits.get(ME.id), 1);
+
+  a.record(0, 0, (d) => { d.blocks.push([1, 1, 99]); });
+  assert.equal(a.edits.get(ME.id), 1, 'and cannot inflate an unrelated builder');
+  assert.equal(a.edits.size, 1);
+});
+
+test('bot commits are counted like anybody else', () => {
+  // They never produce an operation, so a tally hung off `apply()` would leave
+  // the four busiest hands in this world out of the attribution entirely.
+  const a = makeWorld();
+  const bot = a.rivals[0];
+  assert.ok(a.commitAs(bot, 0, 1, 0, 1));
+  assert.ok(a.commitAs(bot, 1, 1, 0, 1));
+  assert.ok(a.removeAs(bot, 0, 1, 0));
+  assert.equal(a.edits.get(bot.id), 3);
+});
+
+test('undo is an edit and is counted like any other', () => {
+  const a = makeWorld();
+  a.apply({ id: ++seq, t: OP.PLACE_BLOCK, x: 0, y: 1, z: 0, mat: 1 }, ME);
+  a.apply({ id: ++seq, t: OP.UNDO }, ME);
+  assert.equal(a.edits.get(ME.id), 2, 'reverting is still touching the world');
+});

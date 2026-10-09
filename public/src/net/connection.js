@@ -37,6 +37,16 @@ import {
   OP, DENY, EV, WORLD, CHUNK_SIZE, localFromIndex, decodeCells, UNDO_DEPTH,
 } from '../../../shared/protocol.js';
 
+/**
+ * How many of the most recent voxel edits keep an author for the hover readout.
+ *
+ * A client memory bound, which is why it lives here rather than in the protocol:
+ * the server neither knows nor cares how much history a viewer chooses to keep.
+ * It is bounded because an hour of building is tens of thousands of edits and
+ * this map exists only to name one block under a cursor.
+ */
+const AUTHOR_CAP = 4096;
+
 /** Socket.io's own ESM bundle, served by the server at this path. */
 const SOCKET_IO_URL = '/socket.io/socket.io.esm.min.js';
 
@@ -103,6 +113,24 @@ export class Connection {
     /** Latest builders and bots, for the presence UI. */
     this.builders = new Map();
     this.bots = [];
+    /**
+     * Who last changed each voxel: `"x,y,z"` -> builder id.
+     *
+     * Populated from the broadcast deltas rather than from anything the server
+     * says about history, so it names everything that happened while this client
+     * was connected and nothing that happened before it. That is the honest
+     * limit: generated terrain has no author, a block placed before you joined
+     * has one you were not there to see, and both are better shown as nothing
+     * than as a guess. Props do not need this at all -- their record already
+     * carries `by`.
+     *
+     * Insertion order doubles as eviction order: re-keying a voxel moves it to
+     * the end, so dropping the first key is a least-recently-changed eviction
+     * with no second structure.
+     *
+     * @type {Map<string, string>}
+     */
+    this.authors = new Map();
 
     /** Latest claimed zones. */
     this.zones = [];
@@ -667,6 +695,10 @@ export class Connection {
       applied++;
       sumX += x; sumY += y; sumZ += z;
       if (firstMat === null) firstMat = mat;
+      // Who put it there, for the hover readout. A removal is skipped: once the
+      // voxel is air there is nothing left to aim at, so remembering it would
+      // spend the bounded budget on entries nothing can ever look up.
+      if (mat !== 0) this._noteAuthor(x, y, z, d.by);
 
       // Somebody else filled a voxel we had predicted on: a lost race. The
       // author check matters because the server's own echo of *our* accepted
@@ -792,9 +824,44 @@ export class Connection {
     return null;
   }
 
+  /**
+   * Remember who changed this voxel, within a bounded budget.
+   *
+   * Called once per block in a delta, including deltas of our own: knowing that
+   * *we* built the wall we are aiming at is as useful as knowing a teammate did.
+   */
+  _noteAuthor(x, y, z, by) {
+    if (!by) return;
+    const key = `${x},${y},${z}`;
+    this.authors.delete(key);
+    this.authors.set(key, by);
+    while (this.authors.size > AUTHOR_CAP) {
+      this.authors.delete(this.authors.keys().next().value);
+    }
+  }
+
+  /**
+   * The builder who last changed this voxel, or null if we never saw it change.
+   *
+   * Null is the truthful answer for generated terrain and for anything built
+   * before this client arrived. The hover readout shows nothing in that case
+   * rather than attributing work to whoever happened to be nearest.
+   */
+  authorOf(x, y, z) {
+    return this.authors.get(`${x},${y},${z}`) ?? null;
+  }
+
+  /**
+   * Name and colour for a builder id, players and bots alike.
+   *
+   * Bots are searched because they are the busiest hands in this world: an
+   * attribution that answered for people and shrugged for the four bots building
+   * alongside them would name less than half of what is on screen.
+   */
   builder(id) {
-    return this.builders.get(id) ?? null;
+    if (!id) return null;
+    return this.builders.get(id) ?? this.bots.find((b) => b.id === id) ?? null;
   }
 }
 
-export { OP, DENY, EV, WORLD };
+export { OP, DENY, EV, WORLD, AUTHOR_CAP };

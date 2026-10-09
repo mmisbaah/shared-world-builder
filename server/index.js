@@ -179,15 +179,31 @@ function assignIdentity(socket) {
   };
 }
 
+/**
+ * Contribution counts ride along in presence.
+ *
+ * Both lists are mapped rather than only the players, because bots write through
+ * `commitAs` and are counted by the very same tally -- a builders panel that
+ * showed how much humans had done and nothing about the other four hands in the
+ * world would be reading the room backwards.
+ */
+function botPayload() {
+  return bots.roster().map((b) => ({ ...b, edits: authority.edits.get(b.id) ?? 0 }));
+}
+
 function presencePayload() {
   return [...builders.values()].map((b) => ({
     id: b.id, name: b.name, color: b.color, bot: false, joinedAt: b.joinedAt,
+    edits: authority.edits.get(b.id) ?? 0,
   }));
 }
 
 function broadcastPresence() {
-  io.emit(EV.PRESENCE, { builders: presencePayload(), bots: bots.roster() });
+  io.emit(EV.PRESENCE, { builders: presencePayload(), bots: botPayload() });
 }
+
+/** What the contribution tally looked like the last time presence went out. */
+let lastEditsSig = '';
 
 // ---------------------------------------------------------------------------
 // Connection handling
@@ -208,7 +224,7 @@ io.on('connection', (socket) => {
       zoneTtlMs: WORLD.ZONE_TTL_MS,
       zoneHoldMs: WORLD.ZONE_HOLD_MS,
     snapshot: authority.snapshot(),
-    presence: { builders: presencePayload(), bots: bots.roster() },
+    presence: { builders: presencePayload(), bots: botPayload() },
     zones: [...authority.zones.values()],
     objectives: objectives.payload(),
   });
@@ -370,7 +386,19 @@ setInterval(() => {
   if (objectives.index !== before) persistence.markDirty();
   // Tell the bots the goal moved, so they announce it instead of carrying on with
   // an obsolete plan.
-  if (bots.syncIntents()) broadcastPresence();
+  //
+  // Contribution counts are re-sent from here too. Presence originally went out
+  // only when the roster changed, which is fine for names and useless for a
+  // number: a counter that only moves when somebody joins is a decoration, not
+  // attribution. Gated on the tally actually having moved, so an idle world
+  // still sends nothing.
+  const intentsChanged = bots.syncIntents();
+  const editsSig = [...authority.edits].map(([id, n]) => `${id}:${n}`).join(',');
+  const editsChanged = editsSig !== lastEditsSig;
+  if (intentsChanged || editsChanged) {
+    lastEditsSig = editsSig;
+    broadcastPresence();
+  }
   if (io.engine.clientsCount > 0) io.emit(EV.OBJECTIVES, objectives.payload());
 }, 1000);
 

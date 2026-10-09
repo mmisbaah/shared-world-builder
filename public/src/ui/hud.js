@@ -188,12 +188,22 @@ export class HUD {
   setPresence(builders, bots, selfId) {
     const el = this.el.builders;
     if (!el) return;
+    // Contribution is the on-screen half of the audio's stated design goal. The
+    // sound tells you who changed the world *near you*; this tells you who has
+    // been changing it at all. Counted on the server for players and bots alike
+    // and re-sent when it moves, so two people looking at the same panel never
+    // see two different numbers for the same fact.
+    const badge = (b) => {
+      const n = Number.isFinite(b.edits) ? Math.max(0, Math.floor(b.edits)) : 0;
+      return `<span class="count" title="${n} edit${n === 1 ? '' : 's'} committed this session">${n}</span>`;
+    };
     const rows = [];
     for (const b of builders) {
       const you = b.id === selfId ? ' <em>(you)</em>' : '';
       rows.push(
-        `<div class="row"><i class="swatch" style="background:${escapeHtml(b.color)}"></i>`
-        + `<span>${escapeHtml(b.name)}${you}</span></div>`,
+        `<div class="row${b.id === selfId ? ' me' : ''}">`
+        + `<i class="swatch" style="background:${escapeHtml(b.color)}"></i>`
+        + `<span>${escapeHtml(b.name)}${you}</span>${badge(b)}</div>`,
       );
     }
     // Bots show what they are working on. Three bots named and coloured like
@@ -207,7 +217,7 @@ export class HUD {
       const role = b.specialism ? `<small>${escapeHtml(b.specialism)}</small>` : '<small>bot</small>';
       rows.push(
         `<div class="row dim"><i class="swatch" style="background:${escapeHtml(b.color)}"></i>`
-        + `<span class="bot-body">${escapeHtml(b.name)} ${role}${intent}</span></div>`,
+        + `<span class="bot-body">${escapeHtml(b.name)} ${role}${intent}</span>${badge(b)}</div>`,
       );
     }
     el.innerHTML = rows.join('') || '<div class="row dim">alone in here</div>';
