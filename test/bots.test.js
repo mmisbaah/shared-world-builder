@@ -18,7 +18,7 @@ import { BotSwarm, BOT_PROFILES } from '../server/bots.js';
 import { Authority } from '../server/authority.js';
 import { ObjectiveTracker } from '../server/objectives.js';
 import { intentFor, chooseIntent, SPECIALISMS, ladderWithIntents } from '../shared/botGoals.js';
-import { OBJECTIVES } from '../shared/objectives.js';
+import { OBJECTIVES, CAMPAIGN_LENGTH, rollingObjective } from '../shared/objectives.js';
 import { PROPS, MATERIALS, isWaterMaterial } from '../shared/materials.js';
 import { generateIsland, SEA_LEVEL, botDistricts } from '../shared/atoll.js';
 
@@ -173,6 +173,30 @@ test('an unknown objective id is handled rather than thrown on', () => {
 // chooseIntent: specialism varies the method, never the objective
 // ---------------------------------------------------------------------------
 
+test('a generated tail objective still yields work', () => {
+  // Regression: the intent lookup went through the static OBJECTIVES table by
+  // id, and a generated tail entry is not in that table -- so every bot fell
+  // through to the idle branch the moment the eight scripted goals were done.
+  // The victory banner fired over a world where nothing built itself, and the
+  // endless tail could never reach its metric with four bots standing about
+  // "tidying up".
+  const tail = rollingObjective(0, 0);
+  assert.equal(OBJECTIVES.some((o) => o.id === tail.id), false,
+    'which is exactly why looking it up by id cannot work');
+
+  const intent = intentFor(tail);
+  assert.notEqual(intent.kind, 'idle', `got "${intent.label}" for ${tail.id}`);
+  assert.ok(intent.label.length > 0, 'and it still tells the player what it is doing');
+});
+
+test('the definition form and the scripted id form agree', () => {
+  // Passing the definition is the only correct thing to do past the campaign,
+  // so it must not quietly diverge from the id path used everywhere else.
+  for (const o of OBJECTIVES) {
+    assert.deepEqual(intentFor(o), intentFor(o.id), `${o.id} diverged`);
+  }
+});
+
 test('every bot specialism works the same objective', () => {
   // This is the whole cooperative premise. Divergence here is the bug the old
   // random behaviour had.
@@ -247,6 +271,21 @@ function makeSwarm(t) {
   t?.after?.(() => swarm.dispose());
   return { authority, objectives, swarm, worker, profile, events };
 }
+
+test('a bot is handed the objective definition, not just its id', (t) => {
+  // This is where the bug actually lived: `chooseIntent` was given the *id*, and
+  // past the campaign that id names a generated entry which the static table
+  // has never heard of. The intent fell through to idle, so the swarm stopped
+  // the instant the scripted eight were complete -- in a mode whose whole premise
+  // is an endless supply of new goals.
+  const { objectives, swarm, profile } = makeSwarm(t);
+  objectives.index = CAMPAIGN_LENGTH;
+
+  const intent = swarm._intentFor(profile);
+  assert.notEqual(intent.kind, 'idle',
+    `the bots stood down: "${intent.label}"`);
+  assert.ok(intent.label.length > 0, 'and the player can still see what it is doing');
+});
 
 test('commitPropAs refuses a prop with no ground beneath it', (t) => {
   // Bots bypass the op pipeline, so their own validation is all that stands

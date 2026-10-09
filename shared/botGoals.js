@@ -30,11 +30,19 @@ import { MATERIALS, PROPS } from './materials.js';
 /**
  * Derive the build intent for an objective.
  *
- * @param {string} objectiveId
+ * Accepts the objective **definition**, or the id of one of the eight scripted
+ * objectives as a convenience. The id form cannot resolve a generated tail
+ * entry -- there is nowhere to look one up -- so anything past the campaign must
+ * pass the definition itself. Getting that wrong is not loud: an unknown id
+ * falls through to the idle branch and every bot simply stops working.
+ *
+ * @param {object|string|null} objective definition, or a scripted objective id
  * @returns {BuildIntent}
  */
-export function intentFor(objectiveId) {
-  const o = OBJECTIVES.find((x) => x.id === objectiveId);
+export function intentFor(objective) {
+  const o = typeof objective === 'string'
+    ? OBJECTIVES.find((x) => x.id === objective)
+    : (objective ?? null);
   if (!o) return { kind: 'idle', label: 'tidying up' };
 
   switch (o.metric) {
@@ -75,12 +83,12 @@ export function intentFor(objectiveId) {
  * parallel. The specialism only decides *how* each one contributes, so you get
  * variety in method without variety in objective.
  *
- * @param {string|null} activeObjectiveId
+ * @param {object|string|null} activeObjective definition, or a scripted objective id
  * @param {string} specialism one of the keys in SPECIALISMS
  * @returns {BuildIntent}
  */
-export function chooseIntent(activeObjectiveId, specialism) {
-  const intent = intentFor(activeObjectiveId);
+export function chooseIntent(activeObjective, specialism) {
+  const intent = intentFor(activeObjective);
   if (intent.kind === 'idle') return intent;
 
   // A specialism only re-frames the work; it never diverts from the objective.

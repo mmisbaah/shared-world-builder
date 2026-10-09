@@ -108,6 +108,22 @@ export class ObjectiveTracker {
     return out;
   }
 
+  /**
+   * The objective the ladder is sitting on, definition included.
+   *
+   * Deliberately read from `ladder()` rather than by indexing the static
+   * `OBJECTIVES` array, which holds only the eight scripted entries. Past the
+   * campaign the active objective is a *generated* tail entry, so that index is
+   * simply out of range -- and returning undefined there meant a human's work on
+   * a tail objective never unlocked it, leaving the endless ladder unable to
+   * advance however much was built.
+   *
+   * @returns {object|null}
+   */
+  currentObjective() {
+    return this.ladder()[this.index] ?? null;
+  }
+
   /** @param {string} builderId */
   noteContributor(builderId) {
     if (builderId) this.contributors.add(builderId);
@@ -124,7 +140,7 @@ export class ObjectiveTracker {
    */
   noteHumanContribution(builderId) {
     this.noteContributor(builderId);
-    const active = OBJECTIVES[this.index];
+    const active = this.currentObjective();
     if (!active) return null;
     this.humanTouched.add(active.id);
     return active.id;

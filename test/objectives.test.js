@@ -645,3 +645,59 @@ test('the wire format says where the campaign ended', () => {
   assert.deepEqual(JSON.parse(JSON.stringify(wire)).campaign, CAMPAIGN_LENGTH,
     'which survives the socket');
 });
+
+// ---------------------------------------------------------------------------
+// The endless tail must remain playable
+// ---------------------------------------------------------------------------
+//
+// Two lookups shipped together that indexed the static OBJECTIVES array by
+// position, which is simply out of range once the campaign is over. One meant a
+// human's contribution to a tail objective never unlocked it; the other meant
+// no bot ever worked towards it. Separately each is a one-line mistake;
+// together they made the celebration a dead end -- a new goal announced, with
+// nothing that could ever finish it.
+
+test('a human contribution unlocks a tail objective, not just a scripted one', () => {
+  const t = new ObjectiveTracker(fakeAuthority());
+  t.index = CAMPAIGN_LENGTH;
+
+  const active = t.currentObjective();
+  assert.ok(active, 'the ladder still has an entry past the campaign');
+  assert.match(active.id, /^rolling_/, 'and it is a generated one');
+  assert.equal(OBJECTIVES.some((o) => o.id === active.id), false,
+    'which is exactly why indexing OBJECTIVES cannot find it');
+
+  assert.equal(t.noteHumanContribution('b1'), active.id, 'the touch is reported');
+  assert.equal(t.isUnlocked(active.id), true, 'and it actually unlocks');
+  assert.equal(t.humanTouched.has(active.id), true);
+});
+
+test('currentObjective reads the ladder rather than the scripted eight', () => {
+  const t = new ObjectiveTracker(fakeAuthority());
+  assert.equal(t.currentObjective(), OBJECTIVES[0], 'inside the campaign both agree');
+
+  t.index = OBJECTIVES.length + 2;
+  assert.equal(t.currentObjective()?.id, 'rolling_2', 'and past it, only the ladder knows');
+});
+
+test('every objective on the ladder can be unlocked by a human', () => {
+  // The invariant `evaluate()` leans on: `unlocked = humanTouched.has(active.id)`
+  // is checked against the *ladder*, so the id that gets added when a human acts
+  // has to be the ladder's. Indexing the scripted array instead satisfied this
+  // for the first eight and silently failed for every one after them.
+  const t = new ObjectiveTracker(fakeAuthority());
+  // `ladder()` grows with `index` (TAIL_AHEAD ahead of it), so the tail only
+  // exists once the cursor is near the boundary -- start there or there is
+  // nothing past the scripted eight to assert about.
+  t.index = CAMPAIGN_LENGTH;
+  const ladder = t.ladder();
+  assert.ok(ladder.length > OBJECTIVES.length, 'the ladder runs past the scripted eight');
+
+  for (let i = 0; i < ladder.length; i++) {
+    t.index = i;
+    assert.equal(t.noteHumanContribution('b1'), ladder[i].id,
+      `index ${i} (${ladder[i].id}) must report itself`);
+    assert.equal(t.isUnlocked(ladder[i].id), true,
+      `index ${i} (${ladder[i].id}) must actually unlock`);
+  }
+});

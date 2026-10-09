@@ -374,7 +374,13 @@ export class BotSwarm {
   }
 
   _intentFor(profile) {
-    return chooseIntent(this._activeObjectiveId(), profile.specialism);
+    // The definition, not its id. Past the campaign the active objective is a
+    // generated tail entry with nowhere to be looked up by id, and handing
+    // `intentFor` that id made it fall through to the idle branch -- so every
+    // bot stood down the moment the scripted eight were done, and the endless
+    // tail was a world where nothing built itself.
+    const active = this.objectives ? this.objectives.currentObjective() : null;
+    return chooseIntent(active, profile.specialism);
   }
 
   /**
