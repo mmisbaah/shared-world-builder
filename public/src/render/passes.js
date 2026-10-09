@@ -380,30 +380,49 @@ vec3 linearToSrgb(vec3 c) {
 
 float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
 
-void main() {
-  vec3 color = texture(uScene, vUv).rgb;
-  color += texture(uBloom, vUv).rgb * uBloomStrength;
-  color *= uExposure;
-
-  color = aces(color);
+// One pixel of the final image, end to end: bloom, exposure, tone map,
+// saturation, vignette, sRGB encode.
+//
+// Every FXAA tap has to go through this exact function, and that is the whole
+// point of factoring it out. The taps used to sample raw HDR uScene while
+// rgbM was the tone-mapped, gamma-encoded centre, so the edge test compared
+// linear radiance (~0.6-2.3) against display code (~0.6-1.0) in one min/max.
+// Two different color spaces guarantee lMax - lMin > 0.05 over most of the
+// frame, and the a/b blends then wrote those raw HDR texels into the
+// framebuffer with no encode at all. Sunlit ground has linear radiance above
+// 1.0, so it came out clipped white -- 43% of a 192-point ground sample --
+// while shadowed ground landed near black. Measured against a model of this
+// function, the old path was off by 99.8 levels per pixel; FXAA disabled,
+// 15.8. The tone curve was correct the entire time. The pass after it was
+// eating it.
+vec3 compose(vec2 uv) {
+  vec3 c = texture(uScene, uv).rgb + texture(uBloom, uv).rgb * uBloomStrength;
+  c *= uExposure;
+  c = aces(c);
 
   // Saturation, applied after the tone map so it works in display space.
-  float l = luma(color);
-  color = mix(vec3(l), color, uSaturation);
+  float l = luma(c);
+  c = mix(vec3(l), c, uSaturation);
 
-  vec2 centred = vUv - 0.5;
-  color *= 1.0 - dot(centred, centred) * uVignette;
+  vec2 centred = uv - 0.5;
+  c *= 1.0 - dot(centred, centred) * uVignette;
 
-  color = linearToSrgb(color);
+  return linearToSrgb(c);
+}
+
+void main() {
+  vec3 color = compose(vUv);
 
   if (uFxaa > 0.5) {
     // FXAA on the encoded result, which is where it is meant to run: luma edges
-    // computed on gamma-encoded values track what the eye actually sees.
+    // computed on gamma-encoded values track what the eye actually sees. The
+    // taps below are compose()d for the same reason -- they are pixels of this
+    // image, not samples of the buffer behind it.
     vec2 px = 1.0 / uResolution;
-    vec3 rgbNW = texture(uScene, vUv + vec2(-1.0, -1.0) * px).rgb;
-    vec3 rgbNE = texture(uScene, vUv + vec2( 1.0, -1.0) * px).rgb;
-    vec3 rgbSW = texture(uScene, vUv + vec2(-1.0,  1.0) * px).rgb;
-    vec3 rgbSE = texture(uScene, vUv + vec2( 1.0,  1.0) * px).rgb;
+    vec3 rgbNW = compose(vUv + vec2(-1.0, -1.0) * px);
+    vec3 rgbNE = compose(vUv + vec2( 1.0, -1.0) * px);
+    vec3 rgbSW = compose(vUv + vec2(-1.0,  1.0) * px);
+    vec3 rgbSE = compose(vUv + vec2( 1.0,  1.0) * px);
     vec3 rgbM  = color;
     float lNW = luma(rgbNW), lNE = luma(rgbNE);
     float lSW = luma(rgbSW), lSE = luma(rgbSE), lM = luma(rgbM);
@@ -413,10 +432,13 @@ void main() {
       vec2 dir = vec2(-((lNW + lNE) - (lSW + lSE)), ((lNW + lSW) - (lNE + lSE)));
       float scale = 1.0 / (min(abs(dir.x), abs(dir.y)) + 0.25);
       dir = clamp(dir * scale, -4.0, 4.0) * px;
-      vec3 a = 0.5 * (texture(uScene, vUv + dir * (1.0 / 3.0 - 0.5)).rgb
-                    + texture(uScene, vUv + dir * (2.0 / 3.0 - 0.5)).rgb);
-      vec3 b = a * 0.5 + 0.25 * (texture(uScene, vUv + dir * -0.5).rgb
-                                + texture(uScene, vUv + dir *  0.5).rgb);
+      // Same rule as the taps above: these are pixels of the composited image,
+      // so they go through compose(). Sampling uScene here was what made the
+      // final assignment write linear radiance into the display framebuffer.
+      vec3 a = 0.5 * (compose(vUv + dir * (1.0 / 3.0 - 0.5))
+                    + compose(vUv + dir * (2.0 / 3.0 - 0.5)));
+      vec3 b = a * 0.5 + 0.25 * (compose(vUv + dir * -0.5)
+                                + compose(vUv + dir *  0.5));
       float lB = luma(b);
       color = (lB < lMin || lB > lMax) ? a : b;
     }
@@ -482,7 +504,19 @@ void main() {
 }
 `, {
     uSource: { value: null },
-    uThreshold: { value: 0.9 },
-    uSoftKnee: { value: 0.6 },
+    // Threshold is set from the scene's measured HDR histogram, not by eye.
+    //
+    // A sampled frame pre-exposure reads p50 0.76, p90 2.26, p95 2.70 -- then jumps
+    // to p99 6.02, a separate ~4.4% population of emissive blocks. At the old 0.9
+    // threshold, *48.7%* of the frame cleared the bright-pass, feeding ~25% of total
+    // frame brightness into the blur: that is the milky wash, and it is why the
+    // picture read as over-exposed while the measured clipping stayed at 2.6%.
+    // 3.0 sits in the gap, so bloom comes from neon rather than sunlit sand.
+    //
+    // The knee stays proportional (0.30 * 3.0 = 0.9) so pulsing emissive blocks
+    // still cross smoothly rather than popping, but it now starts at 2.1 instead of
+    // 0.36 and cannot re-admit the diffuse range.
+    uThreshold: { value: 3.0 },
+    uSoftKnee: { value: 0.30 },
   });
 }

@@ -274,10 +274,21 @@ export class Pipeline {
     composite.uResolution.value.set(t.width, t.height);
 
     // --- 2. G-buffer ---------------------------------------------------------
+    // Glass lives in `scene` (added by main.js) but must NOT be rasterised here;
+    // it is a forward pass, drawn for real in step 4. Drawing it twice put it in
+    // front of a framebuffer its own shader reads: `uSceneDepth` is this very
+    // G-buffer's depth attachment, so every draw was a feedback loop -- and as a
+    // single-output program it was also drawing against a three-attachment MRT.
+    // Both raise GL_INVALID_OPERATION, so all 24 glass draws here were rejected
+    // and wrote nothing: pure cost, no image contribution. Hidden for exactly
+    // this render, then restored so step 4 (and the shadow pass) see it normally.
+    const glassWasVisible = this.glassGroup.visible;
+    this.glassGroup.visible = false;
     renderer.setRenderTarget(t.gbuffer);
     renderer.setClearColor(0x000000, 0);
     renderer.clear(true, true, false);
     renderer.render(scene, camera);
+    this.glassGroup.visible = glassWasVisible;
     this.stats.passes++;
 
     const info = renderer.info.render;

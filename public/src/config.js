@@ -38,7 +38,13 @@ export const CONFIG = {
   // whole frame Inf, and Inf is immune to exposure. Diagnosing "the screen is white and
   // changing exposure does nothing" is impossible while the strength is a literal in
   // another file.
-  bloomStrength: 0.55,
+  //
+  // Raised to 0.85 when the bright-pass threshold was corrected: with the threshold
+  // at 3.0 only the ~4.4% emissive population reaches bloom at all, so a stronger
+  // strength buys those blocks a real glow instead of lifting the whole frame.
+  // Measured on the ground band, saturation is unchanged against the old settings
+  // (19.4 vs 19.5) and clipping is untouched either way.
+  bloomStrength: 0.85,
   // Height fog, per world unit. At 0.0042 this was effectively invisible: the
   // exponential only reached 0.19 at 50 units, so the world's edge cut hard
   // against the sky and the terrain read as an island floating in a void. This

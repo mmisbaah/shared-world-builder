@@ -768,7 +768,7 @@ reopens — the first sample fires and then the bed freezes. Passing a real
 `performance.now()` fixed the harness. The production loop is unaffected; this only
 bites headless verification.
 
-## Fixed: point lights, after three silent decode bugs
+## Point lights: three silent decode bugs
 
 Lanterns rendered for the entire life of this feature and lit nothing. There were
 **three separate bugs, all the same mistake**: treating values read from an RGBA8
@@ -812,7 +812,14 @@ near-versus-far: production intensity gives a visible tint without clipping
 anything (three lanterns in a closed room raise mean luminance by 5.2 with 0% blown
 pixels). The remaining taste call is best made by eye.
 
-## Known defect: residual GL_INVALID_OPERATION
+**Every one of those fixes was real, and together they still made no
+difference.** Re-rendering an identical frozen frame with the light data texture
+blanked — same camera, same time, all three captures taken synchronously so no
+server message could land between them — changes **0 pixels**, and the control
+(A against A again) is also 0, so the measurement is not buried in noise. See
+"Known defect" below. This section used to be titled "Fixed", which was not true.
+
+## Known defect: point lights do not light
 
 Lanterns and torches render, and the cluster grid reports them correctly — 1,554
 tiles lit, the light's index found by `texelFetch`, the radius decoded to within
@@ -838,26 +845,112 @@ regardless, because both were real:
   storing as a byte clamps a cyan lantern at intensity 3.3 to `(0, 2, 3)` — wrong
   hue and effectively unlit. This one is fixed.
 
-The measurement itself is also suspect: the A/B averaged a small central band,
-which may not overlap the lit tiles. A better approach is to sample the exact
-tiles the CPU marked and compare those.
+The original measurement averaged a small central band, which may not have
+overlapped any lit tile, so the claim rested on a weak test. It no longer does:
+blanking `lights.dataTexture` and re-rendering an identical frozen frame — same
+camera, same time, all captures taken synchronously so no server message could
+land between them — changes **0 pixels** across the whole image, and the control
+of A against A again is also 0, so the result is not buried in noise. The defect
+is proven, not suspected.
 
-A residual `GL_INVALID_OPERATION` is still reported at the end of a frame, and
-it had two sources.
+It also rules out the obvious explanation. These lights are not merely *dim*; with
+the real data the framebuffer is bit-identical to having no lights at all, while
+the cluster grid cheerfully reports 1,554 tiles lit. So the grid is reporting on a
+path whose output never reaches `color +=`, which narrows the fault to the loop
+not running (an empty `packed` index, or every id rejected by `id >= 255`) or
+every light being culled at `dist >= r`. Isolating which of those two it is is the
+next step.
 
-One was the overlay. A built-in `LineBasicMaterial` declares a single fragment
-output, and against this three-attachment MRT three r170 raised
+---
+
+## Resolved image defects
+
+Three of these were reported as "the picture looks wrong" while every metric
+claimed otherwise. All three were real, and all three are fixed.
+
+### The residual `GL_INVALID_OPERATION`
+
+It had two sources.
+
+**The overlay** (fixed first). A built-in `LineBasicMaterial` declares a single
+fragment output, and against this three-attachment MRT three r170 raised
 `INVALID_OPERATION` on the line draw and rasterised *nothing*: the draw was
 issued, counted in `renderer.info.render.lines`, and produced zero pixels. Since
 every line in the overlay shares one buffer and one draw, that one material made
-the ghost, the lock boxes, the claim volumes and the remote cursors all
-invisible at once — with the world still looking entirely correct, which is why
-nothing reported it. It now writes all three outputs the way any other G-buffer
-material does, and the overlay alone draws into the MRT with no error.
+the ghost, the lock boxes, the claim volumes and the remote cursors all invisible
+at once — with the world still looking entirely correct, which is why nothing
+reported it. It now writes all three outputs the way any other G-buffer material
+does.
 
-The other remains. It appears during the full-scene G-buffer pass whether or not
-the overlay is drawn, every shader links, and the image is correct, so it is a
-state issue rather than a broken shader.
+**Glass** was the entire remainder: 24 draws per frame, every one rejected.
+Instrumenting `renderer.renderBufferDirect` and draining `gl.getError()` around
+each draw gave `errBefore: 0`, `errAfter: 1282` on the glass draw and nothing
+else; hiding the `glass` group took the frame to zero. Split by pass:
+
+| pass | glass draws | result |
+|---|---|---|
+| shadow maps | 75 | 0 failures |
+| **G-buffer** | 24 | **24 failures** |
+| forward HDR | 24 | 0 failures |
+
+Glass had two independent causes, and needed both:
+
+- **Output count.** The G-buffer is a three-attachment MRT and glass declared a
+  single `out vec4 fragColor`. A trivial two-line GLSL3 program fails 35/35 with
+  one output and passes 35/35 with three — same vertex shader, same geometry, same
+  render state, nothing else altered.
+- **A feedback loop.** The glass shader samples `uSceneDepth`, which *is* the
+  G-buffer's depth attachment, so the draw reads a texture bound to the
+  framebuffer being rendered. Proven independently of the first cause: take the
+  minimal three-output program that passes 0/35, add one
+  `texture(uSceneDepth, …)` fetch, and it goes 35/35.
+
+Ruled out by experiment rather than assumption: render state (glass fails under
+*every* state — blending, depth test, side and `transparent` ablated one at a
+time, and it fails even when given the chunk material's own state), geometry (the
+chunk material on glass geometry draws clean), linking (`LINK_STATUS` and
+`VALIDATE_STATUS` true with an empty info log in every variant), index and vertex
+ranges, and framebuffer completeness (`FRAMEBUFFER_COMPLETE` at draw time).
+
+**The fix is that glass should never have been in that pass at all.** Its own doc
+comment says so — *"Glass cannot go in the G-buffer"* — and `main.js` even claims
+it is hidden there, but nothing implemented it: `glassGroup` is a child of `scene`,
+and `renderer.render(scene, camera)` draws every child. It is now hidden for
+exactly that render and restored immediately after. The rejected draws had always
+written nothing, so the frame is pixel-identical while the error count goes
+24/frame → 0 and 24 wasted draw calls go with it.
+
+### FXAA filtering linear HDR instead of the display buffer
+
+Reported as "71.9% of the ground clips at ≥254" while exposure turned out to be
+innocent. The composite's FXAA compared a centre pixel taken post-ACES/sRGB
+against corner taps that re-read raw `uScene` (linear 0.6–2.3), so the edge test
+fired on nearly every pixel and then wrote raw HDR into the display framebuffer.
+All taps and both directional blends now go through one `compose()` helper —
+bloom, exposure, ACES, saturation, vignette, sRGB — so edge detection runs on
+exactly the data being filtered. Model error against an FXAA-off reference went
+99.78 → 17.48 levels (reference 17.45); clipped ground went 71.86% → 1.91%.
+Exposure was never wrong and stays at 1.25.
+
+### A milky frame at 2.6% clipping
+
+Reported as "the ground looks washed out" while every metric said the tone curve
+was correct. It was, and the second cause was bloom. The bright-pass threshold was
+`0.9`, but the scene's pre-exposure HDR histogram reads p50 0.76, p90 2.26,
+**p95 2.70 — then jumps to p99 6.02**, a separate ~4.4% population of emissive
+blocks. With the knee at `0.6 × 0.9`, anything above 0.36 cleared the bright-pass,
+so **48.7% of the frame** was feeding **~25% of total frame brightness** into the
+blur — and because the composite sums bloom in *before* exposure, that lands on the
+diffuse range as a milky lift rather than as glare. It cost 18% of measured
+saturation (16.2 against 19.7 with bloom off) while clipping stayed flat at 2.62%
+in every configuration, which is exactly why the numbers said "fine" and the
+picture did not.
+
+Threshold is now `3.0`, in the gap between diffuse and emissive, with the knee
+rescaled to `0.30` so pulsing blocks still cross smoothly without the knee
+re-admitting the diffuse range. Strength went to `0.85` because there is now far
+less to lift: saturation recovers to 18.6 (against 19.7 bloom off) at 2.61%
+clipping, unchanged.
 
 ---
 
@@ -1057,10 +1150,6 @@ Stated plainly rather than overclaimed:
   mid-dissolve casting a full shadow for a few hundred ms.
 - **Specular is Blinn-Phong**, not GGX — indistinguishable at this texel density on
   a voxel world.
-- **fxaa filters the encoded (post-tone-map) result**, which is where luma edges
-  are meant to be computed, but its taps re-read `uScene` (linear HDR) rather than
-  the encoded buffer, so the edge detection is running on different data than the
-  colour it is filtering. Correct, but not what the comment claims.
 - **Glass does a manual depth test against a sampled scene-depth texture** rather
   than using a shared depth attachment. Sharing one `DepthTexture` across the
   G-buffer and the HDR target made the second framebuffer's `clear` raise
