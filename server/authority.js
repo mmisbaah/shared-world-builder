@@ -3,6 +3,7 @@ import {
   OP, DENY, WORLD, encodeCells, UNDO_DEPTH,
 } from '../shared/protocol.js';
 import { isValidMaterial, isValidProp, PROP_KEYS } from '../shared/materials.js';
+import { WorldHistory } from './history.js';
 
 /**
  * The authoritative world.
@@ -59,6 +60,16 @@ export class Authority {
      * @type {Map<string, number>}
      */
     this.edits = new Map();
+    /**
+     * What changed and when, for the time-lapse.
+     *
+     * Inactive until boot finishes -- see {@link WorldHistory#start}. It is a
+     * separate object rather than a field on the chunk because a change spans
+     * the world, not a column: the scrubber needs one ordered sequence.
+     *
+     * @type {WorldHistory}
+     */
+    this.history = new WorldHistory();
   }
 
   // -------------------------------------------------------------------------
@@ -97,15 +108,47 @@ export class Authority {
     return c.revs[voxelIndex(x - cx * CHUNK_SIZE, y, z - cz * CHUNK_SIZE)];
   }
 
-  setBlock(x, y, z, mat) {
+  /**
+   * Write a material, remembering what was there for the time-lapse.
+   *
+   * `by` is optional only because the one caller with nothing to attribute --
+   * island generation at boot -- runs while recording is still off. Every path
+   * a builder can reach passes an id, so the log never has to ask afterwards
+   * who did it.
+   *
+   * The old value is read here rather than at the call sites because this is
+   * the single place the cells are written; six callers would be six chances to
+   * capture it after the fact and record `from === to`.
+   */
+  setBlock(x, y, z, mat, by) {
     const { cx, cz } = worldToChunk(x, y, z);
     const c = this.chunk(cx, cz);
     const i = voxelIndex(x - cx * CHUNK_SIZE, y, z - cz * CHUNK_SIZE);
+    const from = c.cells[i];
     c.cells[i] = mat;
     const rev = this.revCounter++;
     c.revs[i] = rev;
     c.rev++;
+    this.history.record({
+      t: Date.now(), kind: 'block', x, y, z, from, to: mat, by: by ?? null,
+    });
     return rev;
+  }
+
+  /**
+   * Remember a prop write for the time-lapse.
+   *
+   * Props have no single funnel the way cells do -- `setBlock` is the only
+   * place a material is written, but a prop record is set or deleted at five.
+   * Every one of those already reads the old record, because undo needs it and
+   * the guards need it, so this is a capture rather than a lookup: the call
+   * site says what was there and what replaced it, and the log never has to go
+   * and find out.
+   */
+  _noteProp(x, y, z, from, to, by) {
+    this.history.record({
+      t: Date.now(), kind: 'prop', x, y, z, from, to, by: by ?? null,
+    });
   }
 
   // -------------------------------------------------------------------------
@@ -255,7 +298,7 @@ export class Authority {
     // here, so it gets a genuine OCCUPIED rejection to roll back against.
     if (op.forceRace && this.getBlock(x, y, z) === 0) {
       const bot = this.rivalBuilder(actor.id);
-      const rev = this.setBlock(x, y, z, bot.mat);
+      const rev = this.setBlock(x, y, z, bot.mat, bot.id);
       this.record(worldToChunk(x, y, z).cx, worldToChunk(x, y, z).cz, (d) => {
         d.blocks.push([voxelIndex(x - worldToChunk(x, y, z).cx * CHUNK_SIZE, y, z - worldToChunk(x, y, z).cz * CHUNK_SIZE), bot.mat, rev]);
         d.by = bot.id;
@@ -274,7 +317,7 @@ export class Authority {
     // Captured before the write: an undo restores *this* value, so it has to be
     // read while it is still on the voxel rather than inferred afterwards.
     const prevMat = this.getBlock(x, y, z);
-    const rev = this.setBlock(x, y, z, op.mat);
+    const rev = this.setBlock(x, y, z, op.mat, actor.id);
     this._pushUndo(actor, { kind: 'block', x, y, z, prevMat, rev });
     const { cx, cz } = worldToChunk(x, y, z);
     this.record(cx, cz, (d) => {
@@ -307,7 +350,7 @@ export class Authority {
     const { cx, cz } = worldToChunk(x, y, z);
     // The block being lifted is what an undo puts back, so it is read first.
     const prevMat = this.getBlock(x, y, z);
-    const rev = this.setBlock(x, y, z, 0);
+    const rev = this.setBlock(x, y, z, 0, actor.id);
     this._pushUndo(actor, { kind: 'block', x, y, z, prevMat, rev });
     this.record(cx, cz, (d) => {
       d.blocks.push([voxelIndex(x - cx * CHUNK_SIZE, y, z - cz * CHUNK_SIZE), 0, rev]);
@@ -343,6 +386,7 @@ export class Authority {
     const record = {
       x, y, z, prop: op.prop, rot: op.rot | 0, by: actor.id, rev: this.revCounter++,
     };
+    this._noteProp(x, y, z, null, record, actor.id);
     c.props.set(pkey, record);
     c.rev++;
     this._pushUndo(actor, { kind: 'prop', x, y, z, prev: null, rev: record.rev });
@@ -367,6 +411,7 @@ export class Authority {
     // The whole record, not a reference: undoing a removal has to put the prop
     // back exactly as it was, including who placed it and how it was rotated.
     this._pushUndo(actor, { kind: 'prop', x, y, z, prev: { ...existing }, rev: existing.rev });
+    this._noteProp(x, y, z, { ...existing }, null, actor.id);
     c.props.delete(pkey);
     c.rev++;
     this.record(cx, cz, (d) => { d.propsRemoved.push(x + ',' + y + ',' + z); d.by = actor.id; });
@@ -471,7 +516,7 @@ export class Authority {
     }
 
     const { cx, cz } = worldToChunk(x, y, z);
-    const rev = this.setBlock(x, y, z, entry.prevMat);
+    const rev = this.setBlock(x, y, z, entry.prevMat, actor.id);
     // Re-point the deeper entries for this voxel. The guard asks "has anybody
     // else been here?", and comparing revisions answers that -- but my own undo
     // just moved the number too, so leaving them stale would make the second
@@ -515,6 +560,7 @@ export class Authority {
       // far as the guard is concerned, and a stale rev would let the next undo
       // compare against an id nobody has ever sent.
       const record = { ...entry.prev, rev: this.revCounter++ };
+      this._noteProp(x, y, z, null, record, actor.id);
       c.props.set(pkey, record);
       c.rev++;
       this._refreshUndo(actor, 'prop', x, y, z, record.rev);
@@ -531,6 +577,7 @@ export class Authority {
         opId: op.id, op: op.t,
       };
     }
+    this._noteProp(x, y, z, existing, null, actor.id);
     c.props.delete(pkey);
     c.rev++;
     this.record(cx, cz, (d) => { d.propsRemoved.push(x + ',' + y + ',' + z); d.by = actor.id; });
@@ -781,7 +828,7 @@ export class Authority {
     const blocked = this.preflight({ x, y, z }, builder);
     if (blocked) return null;
     if (this.getBlock(x, y, z) !== 0) return null;
-    const rev = this.setBlock(x, y, z, mat);
+    const rev = this.setBlock(x, y, z, mat, builder.id);
     const { cx, cz } = worldToChunk(x, y, z);
     this.record(cx, cz, (d) => {
       d.blocks.push([voxelIndex(x - cx * CHUNK_SIZE, y, z - cz * CHUNK_SIZE), mat, rev]);
@@ -814,6 +861,7 @@ export class Authority {
     if (c.props.has(pkey)) return null;
 
     const record = { x, y, z, prop, rot: rot & 3, by: builder.id, rev: this.revCounter++ };
+    this._noteProp(x, y, z, null, record, builder.id);
     c.props.set(pkey, record);
     c.rev++;
     this.record(cx, cz, (d) => { d.props.push(record); d.by = builder.id; });
@@ -823,7 +871,7 @@ export class Authority {
   removeAs(builder, x, y, z) {
     if (this.getBlock(x, y, z) === 0) return null;
     const { cx, cz } = worldToChunk(x, y, z);
-    const rev = this.setBlock(x, y, z, 0);
+    const rev = this.setBlock(x, y, z, 0, builder.id);
     this.record(cx, cz, (d) => {
       d.blocks.push([voxelIndex(x - cx * CHUNK_SIZE, y, z - cz * CHUNK_SIZE), 0, rev]);
       d.by = builder.id;

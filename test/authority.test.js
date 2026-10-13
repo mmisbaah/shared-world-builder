@@ -471,3 +471,129 @@ test('undo is an edit and is counted like any other', () => {
   a.apply({ id: ++seq, t: OP.UNDO }, ME);
   assert.equal(a.edits.get(ME.id), 2, 'reverting is still touching the world');
 });
+
+// ---------------------------------------------------------------------------
+// Time-lapse recording
+//
+// These are the only tests that exercise `history.start()`, and that is the
+// point: a fresh Authority has recording off, so a test that forgets to start
+// it gets an empty log and cannot tell the difference between "broken" and
+// "not asked".
+// ---------------------------------------------------------------------------
+
+/** A fresh Authority with recording switched on, as the server does at boot. */
+function makeRecording() {
+  const a = makeWorld();
+  a.history.start();
+  return a;
+}
+
+test('a placement is recorded with what it replaced', () => {
+  const a = makeRecording();
+  a.apply({ id: ++seq, t: OP.PLACE_BLOCK, x: 0, y: 1, z: 0, mat: 1 }, ME);
+
+  assert.equal(a.history.length, 1);
+  assert.deepEqual(
+    (({ t, kind, x, y, z, from, to, by }) => ({ kind, x, y, z, from, to, by }))(a.history.at(0)),
+    { kind: 'block', x: 0, y: 1, z: 0, from: 0, to: 1, by: ME.id },
+  );
+});
+
+test('every change records what it replaced, in both directions', () => {
+  // A voxel can only be written when it is empty, so "overwriting" is really
+  // place, lift, place again -- and each of the three has to carry its own
+  // `from`. Miss one and the time-lapse can still play forwards while having
+  // no idea what to put back, which is the only direction that matters.
+  const a = makeRecording();
+  a.apply({ id: ++seq, t: OP.PLACE_BLOCK, x: 0, y: 1, z: 0, mat: 1 }, ME);
+  a.apply({ id: ++seq, t: OP.REMOVE_BLOCK, x: 0, y: 1, z: 0 }, ME);
+  a.apply({ id: ++seq, t: OP.PLACE_BLOCK, x: 0, y: 1, z: 0, mat: 3 }, THEM);
+
+  assert.equal(a.history.length, 3, 'a refusal records nothing, so all three landed');
+  assert.deepEqual(
+    a.history.slice(0, 3).map((e) => [e.from, e.to, e.by]),
+    [[0, 1, ME.id], [1, 0, ME.id], [0, 3, THEM.id]],
+    'each change names what was there, what replaced it, and who',
+  );
+});
+
+test('each builder is recorded as themselves', () => {
+  const a = makeRecording();
+  a.apply({ id: ++seq, t: OP.PLACE_BLOCK, x: 0, y: 1, z: 0, mat: 1 }, ME);
+  a.apply({ id: ++seq, t: OP.PLACE_BLOCK, x: 1, y: 1, z: 0, mat: 1 }, THEM);
+  a.apply({ id: ++seq, t: OP.PLACE_BLOCK, x: 2, y: 1, z: 0, mat: 1 }, ME);
+
+  assert.deepEqual(
+    a.history.slice(0, 3).map((e) => e.by),
+    [ME.id, THEM.id, ME.id],
+  );
+});
+
+test('a refusal records nothing', () => {
+  const a = makeRecording();
+  a.apply({ id: ++seq, t: OP.PLACE_BLOCK, x: 0, y: 1, z: 0, mat: 1 }, ME);
+  a.apply({ id: ++seq, t: OP.PLACE_BLOCK, x: 0, y: 1, z: 0, mat: 3 }, THEM);
+  assert.equal(a.history.length, 1, 'a denied write never touched a voxel');
+});
+
+test('an undo is recorded as the change it is', () => {
+  // Reverting is still touching the world, and a time-lapse that skipped it
+  // would show a block vanishing with no explanation of when or why.
+  const a = makeRecording();
+  a.apply({ id: ++seq, t: OP.PLACE_BLOCK, x: 0, y: 1, z: 0, mat: 1 }, ME);
+  a.apply({ id: ++seq, t: OP.UNDO }, ME);
+
+  assert.equal(a.history.length, 2);
+  assert.deepEqual(
+    (({ kind, x, y, z, from, to, by }) => ({ kind, x, y, z, from, to, by }))(a.history.at(1)),
+    { kind: 'block', x: 0, y: 1, z: 0, from: 1, to: 0, by: ME.id },
+  );
+});
+
+test('a prop is recorded with the record itself, in both directions', () => {
+  const a = makeRecording();
+  // Props need solid ground beneath, so the plinth goes down first. It is
+  // deliberately left standing: the two frames checked here are about the
+  // prop, and a ground block that vanished mid-test would make the assertion
+  // pass for the wrong reason.
+  a.apply({ id: ++seq, t: OP.PLACE_BLOCK, x: 0, y: 1, z: 0, mat: 1 }, ME);
+
+  a.apply({ id: ++seq, t: OP.PLACE_PROP, x: 0, y: 2, z: 0, prop: 'lantern', rot: 2 }, ME);
+  const placed = a.history.at(1);
+  assert.equal(placed.kind, 'prop');
+  assert.equal(placed.from, null, 'there was nothing here');
+  assert.equal(placed.to.prop, 'lantern');
+  assert.equal(placed.to.rot, 2, 'the rotation has to survive, or the frame is wrong');
+  assert.equal(placed.to.by, ME.id);
+
+  a.apply({ id: ++seq, t: OP.REMOVE_PROP, x: 0, y: 2, z: 0 }, THEM);
+  const removed = a.history.at(2);
+  assert.equal(removed.from.prop, 'lantern', 'the record is what comes back');
+  assert.equal(removed.from.rot, 2);
+  assert.equal(removed.to, null);
+  assert.equal(removed.by, THEM.id);
+});
+
+test('nothing is recorded before the history is started', () => {
+  // Island generation writes thousands of cells through this exact path. A log
+  // that began earlier would open on terrain nobody built and spend roughly ten
+  // thousand entries before reaching the first thing a person actually did.
+  const a = makeWorld();
+  for (let y = 1; y <= 4; y++) a.apply({ id: ++seq, t: OP.PLACE_BLOCK, x: 0, y, z: 0, mat: 1 }, ME);
+  assert.equal(a.history.length, 0);
+
+  a.history.start();
+  a.apply({ id: ++seq, t: OP.PLACE_BLOCK, x: 0, y: 5, z: 0, mat: 1 }, ME);
+  assert.equal(a.history.length, 1, 'and it starts from exactly here');
+  assert.equal(a.history.at(0).y, 5);
+});
+
+test('a write that changes nothing is not recorded', () => {
+  // It would undo to itself, so the scrubber could never show it either way --
+  // while still spending a slot and costing an application on every drag.
+  const a = makeRecording();
+  a.setBlock(0, 1, 0, 2, ME.id);
+  assert.equal(a.history.length, 1);
+  a.setBlock(0, 1, 0, 2, ME.id);
+  assert.equal(a.history.length, 1, 'the same material in as out is not a change');
+});

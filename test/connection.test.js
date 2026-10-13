@@ -728,3 +728,85 @@ test('a builder id resolves for bots as well as for people', () => {
   assert.equal(conn.builder('nobody'), null);
   assert.equal(conn.builder(null), null, 'and an absent id is not a lookup');
 });
+
+// ---------------------------------------------------------------------------
+// Holding deltas for a time-lapse
+// ---------------------------------------------------------------------------
+
+test('a held delta is not applied to the world', () => {
+  // The bots keep building while a player is watching the past. Letting one
+  // through would stamp a present-tense edit onto a past-tense scene, and it
+  // would be wrong twice over: the scrubber's log would not know about it yet,
+  // so its next step could not know it had to be undone.
+  const { world, conn, fromServer } = harness();
+  const li = voxelIndex(1, 10, 1);
+
+  conn.pauseDeltas();
+  fromServer(EV.CHUNK_DELTA, delta(0, 0, [[li, STONE, 7]], 'b_other'));
+
+  assert.equal(world.getAuthoritative(1, 10, 1), 0, 'the past stays the past');
+  assert.equal(conn.bufferedDeltas.length, 1, 'and the edit is kept, not dropped');
+});
+
+test('resuming applies everything held and clears the flag with the queue', () => {
+  const { world, conn, fromServer } = harness();
+  const a = voxelIndex(1, 10, 1);
+  const b = voxelIndex(2, 10, 1);
+
+  conn.pauseDeltas();
+  fromServer(EV.CHUNK_DELTA, delta(0, 0, [[a, STONE, 7]], 'b_other'));
+  fromServer(EV.CHUNK_DELTA, delta(0, 0, [[b, BRICK, 8]], 'b_other'));
+
+  assert.equal(conn.resumeDeltas(), 2, 'the count is what the caller reports to the player');
+  assert.equal(world.getAuthoritative(1, 10, 1), STONE, 'in the order they arrived');
+  assert.equal(world.getAuthoritative(2, 10, 1), BRICK);
+  assert.equal(conn.bufferedDeltas.length, 0);
+  assert.equal(conn.historyMode, false, 'the flag goes with the queue');
+});
+
+test('resuming does not re-buffer the queue it just flushed', () => {
+  // The natural implementation clears the flag *after* applying, and `resume`
+  // calls back into `_onDelta` -- so every delta is re-held, the world stays
+  // one tick behind forever, and the failure is invisible until somebody
+  // compares two clients. The flag has to come off first.
+  const { world, conn, fromServer } = harness();
+  const li = voxelIndex(1, 10, 1);
+
+  conn.pauseDeltas();
+  fromServer(EV.CHUNK_DELTA, delta(0, 0, [[li, STONE, 7]], 'b_other'));
+  conn.resumeDeltas();
+
+  assert.equal(conn.bufferedDeltas.length, 0, 'not still holding what was just applied');
+  assert.equal(conn.resumeDeltas(), 0, 'and a second resume finds nothing to do');
+  assert.equal(world.getAuthoritative(1, 10, 1), STONE, 'the value stayed put');
+});
+
+test('deltas apply immediately again once resumed', () => {
+  const { world, conn, fromServer } = harness();
+  const li = voxelIndex(1, 10, 1);
+
+  conn.pauseDeltas();
+  conn.resumeDeltas();
+  fromServer(EV.CHUNK_DELTA, delta(0, 0, [[li, BRICK, 9]], 'b_other'));
+
+  assert.equal(world.getAuthoritative(1, 10, 1), BRICK);
+  assert.equal(conn.bufferedDeltas.length, 0, 'nothing is held outside playback');
+});
+
+test('a delta arriving while the world is rewound does not disturb the frame', () => {
+  // End to end: hold, scrub, and confirm the held edit never leaks into the
+  // frame -- and that it does land once playback ends.
+  const { world, conn, fromServer } = harness();
+  const li = voxelIndex(3, 10, 3);
+
+  conn.pauseDeltas();
+  fromServer(EV.CHUNK_DELTA, delta(0, 0, [[li, STONE, 4]], 'bot_zen'));
+  assert.equal(world.getAuthoritative(3, 10, 3), 0);
+
+  // A scrubber walking the world under it must not pick the held edit up.
+  world.setAuthoritative(3, 10, 3, 0);
+  assert.equal(world.getAuthoritative(3, 10, 3), 0);
+
+  conn.resumeDeltas();
+  assert.equal(world.getAuthoritative(3, 10, 3), STONE);
+});

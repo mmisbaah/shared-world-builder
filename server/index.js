@@ -146,6 +146,13 @@ seedWorld();
 const restored = persistence.load();
 if (!restored) persistence.saveNow();
 
+// Only now does the time-lapse start recording. Everything above -- the island,
+// and any restored save -- wrote thousands of cells in the first few
+// milliseconds through the very same `setBlock`. A history that began earlier
+// would open on terrain nobody built, and take roughly ten thousand entries
+// before it reached the first thing a person actually did.
+authority.history.start();
+
 // Claims survive a restart, but their decay clock does not -- see
 // Authority#restoreZones. Anyone holding ground after a restart starts inside the
 // warning window and has to work to keep it, which is the same rule as everyone
@@ -433,6 +440,24 @@ app.get('/api/status', (_req, res) => {
     bots: { enabled: bots.enabled, ...bots.stats, roster: bots.roster() },
     persistence: persistence.report(),
   });
+});
+
+/**
+ * The change log, for the time-lapse.
+ *
+ * Served over HTTP rather than the socket because it is large, one-shot, and
+ * has nothing to do with the tick: the client fetches it when the player opens
+ * the viewer and does not ask again until they do. Sending it as an op would
+ * put up to eight thousand entries through the same queue as a block placement
+ * and give the client a pending-operation id to reconcile, for what is really a
+ * page of JSON.
+ *
+ * `slice` returns a copy, not the live array, because the world keeps being
+ * edited while this response is in flight.
+ */
+app.get('/api/history', (_req, res) => {
+  const h = authority.history;
+  res.json({ span: h.span(), length: h.length, entries: h.slice(0, h.length) });
 });
 
 server.listen(PORT, () => {

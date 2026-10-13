@@ -90,6 +90,23 @@ export class Connection {
     this.nextOpId = 1;
 
     /**
+     * Whether a time-lapse is holding deltas back, and what it is holding.
+     *
+     * A scrubber walks the world *backwards* while the bots keep walking it
+     * forwards. A delta let through mid-playback would stamp a change from the
+     * present onto a scene that is supposed to be the past, and it would land
+     * out of step twice over: the scrubber's log would not yet know about it,
+     * so the next step could not know it had to be undone.
+     *
+     * Buffering is exact rather than a fudge, because a delta *is* the whole
+     * edit. Applying the queue in order when playback ends brings this client to
+     * precisely the state it would have reached had it never buffered at all.
+     */
+    this.historyMode = false;
+    /** @type {object[]} deltas deferred while {@link Connection#historyMode} is set */
+    this.bufferedDeltas = [];
+
+    /**
      * How many of this builder's own edits the server still holds revertible.
      *
      * Maintained from acks rather than counted optimistically, so an edit joins
@@ -663,7 +680,41 @@ export class Connection {
    * the protocol's own inverse mapping -- the client never trusts an x/y/z from
    * the wire for blocks.
    */
+  /**
+   * Stop applying deltas to the world, keeping them for later.
+   *
+   * This is the only reason a time-lapse can be a plain walk over a log instead
+   * of a walk over a log that is being appended to while you watch it.
+   */
+  pauseDeltas() {
+    this.historyMode = true;
+    return this;
+  }
+
+  /**
+   * Apply everything deferred, in the order it arrived.
+   *
+   * The flag comes off first, because this calls back into `_onDelta`, which
+   * would cheerfully re-buffer the whole queue and leave the client exactly
+   * where it started.
+   *
+   * @returns {number} how many deltas had been deferred
+   */
+  resumeDeltas() {
+    this.historyMode = false;
+    const queue = this.bufferedDeltas;
+    this.bufferedDeltas = [];
+    for (const d of queue) this._onDelta(d);
+    return queue.length;
+  }
+
   _onDelta(d) {
+    // Held, not dropped: see `pauseDeltas`. A playback would otherwise have a
+    // present-tense edit land in the middle of a past-tense scene.
+    if (this.historyMode) {
+      this.bufferedDeltas.push(d);
+      return;
+    }
     const col = this.world.getColumn(d.cx, d.cz);
     if (!col) return; // a delta for a column we were never told about
 

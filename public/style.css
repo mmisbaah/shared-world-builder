@@ -499,6 +499,65 @@ body.no-select { user-select: none; }
    forever instead of disappearing. */
 .who-tip[hidden] { display: none; }
 
+/* --- world history --------------------------------------------------------
+   A transport bar above the footer, not a rail panel: what is being shown is
+   the whole world changing, and a scrubber tucked in beside the minimap is a
+   control nobody ever looks at.
+
+   112px is the footer's measured height (91) plus the gap it is held off the
+   bottom by (14), plus breathing room -- the same measurement `.hud-left`
+   already records, rather than a second guess that would drift from it. */
+.history {
+  position: fixed; left: 50%; bottom: 112px;
+  transform: translateX(-50%);
+  width: min(92vw, 620px);
+  z-index: 30; pointer-events: none;
+}
+.history > * { pointer-events: auto; }
+.history[hidden] { display: none; }
+
+.history-panel { padding: 9px 11px; display: flex; flex-direction: column; gap: 8px; }
+.history-head {
+  display: flex; align-items: baseline; gap: 10px;
+  font-size: 10px;
+}
+.history-title {
+  font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--cyan);
+}
+.history-head .mono { font-size: 10px; }
+/* Pushes the counters right so the readout lines up whether or not the label
+   next to it happens to be long. */
+#history-count { margin-left: auto; }
+
+.history-body { display: flex; align-items: center; gap: 10px; }
+
+/* The scrubber is the one control in the game that is not a button, so it gets
+   its own styling rather than inheriting the native grey -- a default range
+   input over a translucent dark panel is unreadable at any brightness. */
+#history-scrub {
+  -webkit-appearance: none; appearance: none;
+  flex: 1; height: 4px; border-radius: 3px;
+  background: rgba(255, 255, 255, .10);
+  outline: none; cursor: pointer;
+}
+#history-scrub::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 14px; height: 14px; border-radius: 50%;
+  background: var(--cyan); border: 2px solid #04121c;
+  cursor: grab;
+  transition: transform .1s;
+}
+#history-scrub::-webkit-slider-thumb:hover { transform: scale(1.18); }
+#history-scrub::-moz-range-thumb {
+  width: 14px; height: 14px; border-radius: 50%;
+  background: var(--cyan); border: 2px solid #04121c; cursor: grab;
+}
+/* Playing and dragging the same range fight over `value`; the class is how the
+   panel says "this number is mine, not yours". */
+.history-panel.is-playing #history-scrub::-webkit-slider-thumb { background: var(--amber); }
+.history-panel.is-playing #history-scrub::-moz-range-thumb { background: var(--amber); }
+
 .list .bot-body { display: flex; align-items: baseline; gap: 4px; flex-wrap: wrap; min-width: 0; }
 /* What a bot is doing, from the objective it derives its intent from. Kept dim so
    it reads as annotation under the name rather than as the primary content. */

@@ -27,10 +27,12 @@ import { HUD, escapeHtml } from './ui/hud.js';
 import { ObjectivePanel, ObjectiveBanner } from './ui/objectivePanel.js';
 import { Minimap } from './ui/minimap.js';
 import { ClaimPanel } from './ui/claimPanel.js';
+import { HistoryPanel } from './ui/historyPanel.js';
 import { Coach, wasCoached, rememberCoached } from './ui/coach.js';
 import { Sfx } from './audio/sfx.js';
 import { playEvents } from './audio/events.js';
 import { SFX, VoiceBudget, ambienceFor, surfaceUnder } from './audio/voice.js';
+import { Scrubber, agoLabel } from './history/scrubber.js';
 
 const hud = new HUD();
 
@@ -270,6 +272,14 @@ async function main() {
     qualityIndex: QUALITY_ORDER.indexOf('high'),
     /** Half-width of a claim, so C2 and C4 are different-sized districts. */
     claimHalf: 6,
+    /**
+     * Whether a time-lapse is open.
+     *
+     * Lives on `state` rather than on the panel because it has to be visible to
+     * the pointer handlers, which run outside this scope and would otherwise
+     * have to ask a UI component whether the *world* is currently the past.
+     */
+    historyOpen: false,
   };
 
   let latestEvents = [];
@@ -570,6 +580,11 @@ async function main() {
   });
 
   canvas.addEventListener('pointerdown', (e) => {
+    // While a time-lapse is open the world under the cursor is not the world an
+    // edit would be written into -- it may be five minutes old. Letting a click
+    // through here would place a block into the past, which the scrubber would
+    // then cheerfully undo and redo on the next frame.
+    if (state.historyOpen) return;
     if (e.button === 1 || e.button === 2) return; // the rig binds these itself
     if (e.button !== 0) return;
     downAt = {
@@ -580,6 +595,7 @@ async function main() {
   });
 
   canvas.addEventListener('pointerup', (e) => {
+    if (state.historyOpen) { downAt = null; return; }
     if (e.button === 1 || e.button === 2) return;
     if (e.button !== 0 || !downAt) return;
 
@@ -654,8 +670,141 @@ async function main() {
   btnUndo.onclick = doUndo;
   syncUndoButton();
 
+  // --- world history -------------------------------------------------------
+  // The change log lives on the server and the world it describes is this one,
+  // so showing the past is a matter of walking the changes back over the live
+  // data rather than fetching a stored snapshot. Nothing here is a second copy
+  // of the world, so nothing here can drift out of step with it.
+  //
+  // Everything below is the bookkeeping that makes that walk safe. Three things
+  // have to hold while it runs, and each fails in a way that corrupts the
+  // present silently rather than throwing:
+  //
+  //   1. no op in flight -- an ack writes its settled value straight into the
+  //      world and knows nothing about the scrubber's cursor;
+  //   2. no delta arriving -- the bots keep building while you watch, and a
+  //      present-tense edit in a past-tense scene is wrong twice over: it is
+  //      also not yet in the log, so the next step could not know to undo it;
+  //   3. a return to the present on *every* exit path -- a half-rewound world
+  //      is worse than no time-lapse at all.
+  const PLAY_TICK_MS = 33;
+  const PLAY_SECONDS = 8;
+
+  /** @type {import('./history/scrubber.js').Scrubber|null} */
+  let scrubber = null;
+  let playTimer = null;
+
+  const historyPanel = new HistoryPanel({
+    onSeek: (i) => seekHistory(i),
+    onTogglePlay: () => togglePlay(),
+    onExit: () => closeHistory(),
+  });
+
+  function syncHistory() {
+    if (!scrubber) return;
+    const t = scrubber.shownTime();
+    historyPanel.setCursor(scrubber.cursor, t === null ? null : agoLabel(t), scrubber.length);
+  }
+
+  function setPlaying(on) {
+    if (playTimer) { clearInterval(playTimer); playTimer = null; }
+    if (on) playTimer = setInterval(playStep, PLAY_TICK_MS);
+    historyPanel.setPlaying(on);
+  }
+
+  /**
+   * Advance one tick.
+   *
+   * Changes per tick is derived from the size of the log rather than fixed, so
+   * playback takes about `PLAY_SECONDS` however much was built. A fixed rate
+   * would replay a hundred changes in three seconds and eight thousand in four
+   * minutes, and the second of those is not a time-lapse, it is a screensaver.
+   */
+  function playStep() {
+    if (!scrubber) { setPlaying(false); return; }
+    const ticks = Math.max(1, Math.round((PLAY_SECONDS * 1000) / PLAY_TICK_MS));
+    scrubber.seek(scrubber.cursor + Math.max(1, Math.round(scrubber.length / ticks)));
+    syncHistory();
+    if (scrubber.atPresent) setPlaying(false);
+  }
+
+  function togglePlay() {
+    if (!scrubber) return;
+    // Pressing play at the present means "from the top", which is the only
+    // thing anyone has ever wanted a play button to do when there is nothing
+    // left to play.
+    if (scrubber.atPresent) scrubber.seek(0);
+    setPlaying(!playTimer);
+    syncHistory();
+  }
+
+  function seekHistory(i) {
+    if (!scrubber) return;
+    scrubber.seek(i);
+    syncHistory();
+    if (playTimer && scrubber.atPresent) setPlaying(false);
+  }
+
+  async function openHistory() {
+    if (historyPanel.isOpen) { closeHistory(); return; }
+
+    // Checked at the last possible moment rather than when the button was
+    // rendered: an op can be sent by a click that has not yet resolved.
+    if (conn.pending.size > 0) {
+      hud.toast('finish what you are building first', 'warn');
+      return;
+    }
+
+    let log;
+    try {
+      const res = await fetch('/api/history');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      log = await res.json();
+    } catch (err) {
+      hud.toast(`history unavailable: ${err.message}`, 'warn');
+      return;
+    }
+    if (!log.entries?.length) {
+      hud.toast('nothing has been built here yet', 'warn');
+      return;
+    }
+
+    scrubber = new Scrubber(world, log.entries);
+    state.historyOpen = true;
+    conn.pauseDeltas();
+    historyPanel.open({ length: log.length });
+    syncHistory();
+    hud.log(`history: ${log.length} changes, back to ${agoLabel(log.span.oldest)}`);
+  }
+
+  function closeHistory() {
+    historyPanel.close();
+    setPlaying(false);
+    if (!scrubber) return;
+
+    const restored = scrubber.restore();
+    scrubber = null;
+    state.historyOpen = false;
+    // `resumeDeltas` takes the flag back off *and* applies everything that
+    // landed while the past was on screen. Doing it the other way round would
+    // flush into a connection that was still holding.
+    const deferred = conn.resumeDeltas();
+    if (restored || deferred) {
+      hud.log(`back to the present${deferred ? `, +${deferred} edit(s) that landed while you watched` : ''}`);
+    }
+  }
+
+  document.getElementById('btn-history').onclick = () => openHistory();
+
   window.addEventListener('keydown', (e) => {
+    // While a time-lapse is open nothing else is editable. The world under the
+    // cursor is not the world an op would be written into -- it may be five
+    // minutes old -- so `Z` would undo something that is not on screen and
+    // `1/2/3` would pick a material for a scene about to be replaced.
+    if (state.historyOpen && e.key !== 'Escape' && e.key.toLowerCase() !== 'h') return;
     switch (e.key.toLowerCase()) {
+      case 'escape': if (historyPanel.isOpen) closeHistory(); break;
+      case 'h': openHistory(); break;
       case 'z': doUndo(); break;
       case 'r': state.propRot = (state.propRot + 1) % 4; break;
       case 'g': state.showGrid = !state.showGrid; break;
@@ -898,6 +1047,12 @@ async function main() {
   window.swb = {
     ctx, world, conn, meshManager, pipeline, overlay, props, minimap, hud, state, THREE,
     sfx, budget, setMuted, coach, coachClicked, pumpCoach,
+    // Time-lapse handles. `scrubber` is a getter because it only exists while
+    // the bar is open, and a stale reference to a finished one would report a
+    // cursor into a log that is no longer being applied.
+    history: historyPanel, openHistory, closeHistory,
+    get scrubber() { return scrubber; },
+    get playing() { return !!playTimer; },
   /**
    * Run one simulation + render step by hand.
    *

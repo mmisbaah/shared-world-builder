@@ -935,6 +935,97 @@ fourteen seconds, a pillar I had just built read my own name at the right offset
 from the pointer, bare terrain showed nothing, a bot's lantern read
 *Zen_Architect*, and leaving the canvas cleared the label.
 
+## World history: watching it happen again
+
+`H` opens a transport bar above the footer. Drag it and the world rewinds;
+press Play and it builds itself in about eight seconds, whatever was built;
+press Escape and you are back in the present. Everything the world has
+recorded -- your work, the four bots', anybody else's -- is in there.
+
+**It stores changes, not worlds.** A snapshot every N seconds would cost about
+a megabyte each and still leave the scrubber interpolating between two points
+that were never actually the world. A change costs roughly sixty bytes, is
+exact at every step, and -- because it carries the value it replaced -- walks
+backwards as readily as forwards. The log is capped by count and by age, and
+`/api/history` hands it over as one page of JSON when the panel opens.
+
+**Scrubbing is by index, not by time.** Two changes in the same millisecond
+are not ambiguous by index but are irreducibly ambiguous by time, and a
+time-lapse that can skip a change because the clock did not move is not
+showing the world that existed. The label underneath reads as "how long ago",
+because that is a fact about the frame; a wall clock would be a fact about
+the server.
+
+**Truncation cannot make a frame wrong.** Walking back from the present by
+every change after index `k` yields the state at index `k`, *whatever was
+dropped from the head of the log* -- nothing between here and now was
+forgotten, so nothing here can be reconstructed wrongly. A cap only bounds how
+far back the scrubber may go. This is the property the whole feature rests on,
+and it is why the walk goes backwards from the present rather than forwards
+from a baseline that a cap would have destroyed.
+
+**The old value is captured where it is written, not looked up afterwards.**
+`setBlock` is the single place a material is written, so it reads the cell
+before writing and logs both ends. Six callers would be six chances to capture
+it late and record `from === to`. Props have no such funnel -- a record is set
+or deleted at five different sites -- but every one of those already reads the
+old record, because undo needs it and the guards need it, so they hand it over.
+
+**Recording starts after boot.** `seedWorld()` writes the island through that
+same `setBlock`, thousands of times in the first few milliseconds. A log that
+began earlier would open on terrain nobody built and spend roughly ten
+thousand entries before reaching the first thing a person actually did. Hence
+`authority.history.start()` sitting immediately after generation and the
+restored save, and a test that asserts an Authority which forgot to call it
+records nothing at all.
+
+**The log lives on the server.** The obvious alternative -- recording in the
+client's own delta handler -- cannot see our own edits' true old value. The
+ack arrives first and writes the settled value straight into the world, so by
+the time the server's echo of our own placement comes back through the same
+handler, `was === mat` and the entry would be a no-op. Whether our own work
+appeared in the time-lapse would depend on whether the ack or the delta won a
+race. Putting it in `record()`'s write path, where the old value is still on
+the voxel, removes the race rather than winning it.
+
+**`setAuthoritative` without a revision is what makes the round trip safe.**
+That call updates the material, keeps the occupancy count straight, marks the
+chunk dirty for remeshing, and **leaves the revision array alone**.
+Revisions are the authority's monotonic record of what happened and belong to
+the present no matter what the cells currently show -- so while the scrubber
+walks the world backwards and forwards, they stay exactly right, and restoring
+costs no bookkeeping at all. Nothing else had to change for the round trip to
+be exact.
+
+**Deltas are held, not dropped, while the past is on screen.** The bots keep
+building while you watch. A delta let through mid-playback would stamp a
+change from the present onto a scene that is supposed to be the past, and it
+would be wrong twice over: the scrubber's log would not yet know about it, so
+its next step could not know it had to be undone. Buffering is exact rather
+than a fudge, because a delta *is* the whole edit -- applying the queue in
+order when playback ends brings the client to precisely the state it would
+have reached had it never buffered.
+
+The flag has to come off *before* the queue is flushed. `resumeDeltas` calls
+back into `_onDelta`, so the natural order -- apply, then clear -- re-buffers
+every delta it just applied, and the world sits one tick behind forever. There
+is a test named for it, because the wrong order is green everywhere else.
+
+Three other things are held closed for the same reason, and each fails
+silently rather than throwing: no op in flight when the panel opens (an ack
+knows nothing about the scrubber's cursor), no pointer edits while it is open
+(the world under the cursor may be five minutes old), and a return to the
+present on every exit path. A reload during playback restores truth from the
+snapshot anyway, which makes it the cheapest safety net of the three.
+
+Verified live: six blocks placed and rewound to nothing, three of six restored
+at the midpoint, and the present brought back byte for byte; a lantern
+round-tripping with its rotation and its author intact; an injected delta held
+for the whole playback and applied on close; Play advancing the cursor
+1 → 2 → 3 → 5 → 6 and stopping at the present with the button reset; `H` and
+`Escape` releasing all three guards; and the log filling with bot-authored
+entries -- *Maya_Craft* placing a campfire -- while the bar was open.
+
 ## Point lights: three silent decode bugs
 
 Lanterns rendered for the entire life of this feature and lit nothing. There were
@@ -1338,7 +1429,7 @@ Stated plainly rather than overclaimed:
 
 ## Tests
 
-524 tests, `node --test test/`, all passing. They cover the layers that are easy
+555 tests, `node --test test/`, all passing. They cover the layers that are easy
 to get subtly wrong:
 
 - `coach` (33) - every step's requirement being something the player can always do, ids matching what they wait for, no two consecutive steps sharing a signal, one step per pump rather than collapsing, per-step independence, clicks on a re-rendered panel, and persistence through an injected store
@@ -1402,13 +1493,26 @@ to get subtly wrong:
 - `picking` (27) — DDA traversal, entry normals, zero-component rays, non-finite
   direction rejection, prop AABBs, placement always landing in air, and a prop hit
   carrying the face it was entered through rather than undefined
+- `history` (18) — the log and the walk, as two halves that must agree. The
+  server side: nothing recorded before `start()`, a no-op write dropped, the cap
+  keeping the *newest* rather than the oldest, the age limit trimming the head,
+  `slice` returning a copy rather than the live array so a response in flight
+  cannot mutate underneath its reader, and `indexAt` resolving a duplicate
+  timestamp to its first occurrence. The scrubber side: opening on the present,
+  walking back through **every** index against a truth table built
+  independently of it (both agree trivially at the two endpoints, so only the
+  frames in between can fail, and those are exactly the ones that are easy to
+  get wrong), seeking applying only the difference, props round-tripping their
+  rotation and their author, and the property that makes truncation safe --
+  with the head of the log dropped, walking back is still exact at every index
+  the log reaches, because nothing between here and now was forgotten
 - `hud` (8) — the builders panel, where attribution actually becomes readable:
   a count on every row, one edit phrased as one rather than as "1 edits", an
   absent or malformed count reading as zero rather than `NaN`, your own row
   marked out from everyone else's, a bot's intent and specialism surviving the
   row gaining a second figure, a name that cannot inject markup into the panel,
   and an empty world still saying so
-- `connection` (56) — every reconciliation path, out-of-order answers, timeouts,
+- `connection` (61) — every reconciliation path, out-of-order answers, timeouts,
   disconnects, snapshot round trip, probe/op id disjointness, and the undo count
   moving only on acknowledgement, following a refusal down (a refused entry is
   spent), zeroing on an empty stack rather than decrementing, capping at the depth
@@ -1416,8 +1520,13 @@ to get subtly wrong:
   no coordinates of its own. Plus the hover attribution map: the newest author
   winning a rebuilt voxel, our own edits recorded as well as everyone else's,
   a removal spending no budget, the bound evicting the least recently changed
-  voxel, and an id resolving for bots
-- `authority` (33) — races, optimistic concurrency, locks, zones, rate limiting,
+  voxel, and an id resolving for bots. Then the delta holding a time-lapse
+  needs: a held delta leaving the world untouched, a resume applying everything
+  held in arrival order and clearing the flag *with* the queue -- the obvious
+  order, flag off after flushing, re-buffers the lot, because `resume` calls
+  back into the very handler that was paused and the world then sits one tick
+  behind forever -- and deltas applying immediately again afterwards
+- `authority` (41) — races, optimistic concurrency, locks, zones, rate limiting,
   full-height columns, and undo: restoring a placement and a removal with the
   material that was actually there, walking backward through successive edits
   instead of toggling the newest one, two edits to one voxel both being reachable,
@@ -1431,4 +1540,11 @@ to get subtly wrong:
   counted separately** (the delta is cumulative across the tick, so the writer
   has to be cleared first or the first builder is credited for both and the
   second never observed), a record that names nobody crediting nobody, bots
-  counted even though they never produce an operation, and undo counted
+  counted even though they never produce an operation, and undo counted. Then
+  the time-lapse log: a placement recording what it replaced, the chain
+  place → lift → place carrying a `from` at every link, a refusal recording
+  nothing, an undo recorded as the change it is, a prop carrying its rotation
+  and its author in both directions, a same-material write being no change at
+  all, and nothing at all recorded before `history.start()` -- which is what
+  keeps island generation, thousands of `setBlock`s in the first few
+  milliseconds, out of a history meant to show what people built

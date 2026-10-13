@@ -128,6 +128,7 @@
       <dt>G</dt><dd>grid overlay</dd>
       <dt>1/2/3</dt><dd>tool</dd>
       <dt>Z</dt><dd>undo your edit</dd>
+      <dt>H</dt><dd>world history</dd>
       <dt>F</dt><dd>frame stats</dd>
       <dt>M</dt><dd>mute audio</dd>
       <dt>C</dt><dd>claim ground</dd>
@@ -162,6 +163,9 @@
     <button id="btn-undo" class="btn btn-ghost" disabled
             title="Undo your last edit (Z)"><i class="fa-solid fa-rotate-left"></i> <span>Undo</span></button>
     <div class="sep"></div>
+    <button id="btn-history" class="btn btn-ghost"
+            title="Watch the world build itself (H)"><i class="fa-solid fa-clock-rotate-left"></i> <span>History</span></button>
+    <div class="sep"></div>
     <button id="btn-claim" class="btn btn-ghost" aria-pressed="false"
             title="Claim the ground you are looking at (C)"><i class="fa-solid fa-flag"></i> <span>Claim</span></button>
     <div class="sep"></div>
@@ -184,6 +188,33 @@
      label you must move away to dismiss sits in front of the very block it is
      describing. -->
 <div id="who" class="who-tip" hidden></div>
+
+<!-- World history --------------------------------------------------------
+     A time-lapse of the change log, so it is a transport bar rather than a
+     rail panel: what is being shown is the whole world changing, and a
+     scrubber tucked in beside the minimap would be a control nobody ever
+     looks at. It is a modal over the *viewport* only -- the panels stay
+     readable -- and it clears the footer by the footer's measured height
+     rather than by a guess. -->
+<div id="history" class="history" hidden>
+  <div class="panel history-panel">
+    <div class="history-head">
+      <span class="history-title"><i class="fa-solid fa-clock-rotate-left"></i> World history</span>
+      <span id="history-when" class="mono dim">&mdash;</span>
+      <span id="history-count" class="mono dim"></span>
+    </div>
+    <div class="history-body">
+      <button id="history-play" class="btn btn-ghost" title="Play forwards from the oldest frame">
+        <i class="fa-solid fa-play"></i> <span>Play</span>
+      </button>
+      <input id="history-scrub" type="range" min="0" max="0" value="0" step="1"
+             aria-label="Scrub through the history of this world">
+      <button id="history-close" class="btn btn-ghost" title="Back to the present (Esc)">
+        <i class="fa-solid fa-forward-step"></i> <span>Present</span>
+      </button>
+    </div>
+  </div>
+</div>
 
 <div id="stats" class="stats mono hidden"></div>
 
