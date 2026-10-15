@@ -73,6 +73,7 @@ export class SharedWorld extends DurableObject {
     }
     this.authority.pending.clear();
     this.authority.history.start();
+    this.objectives.evaluate();
     if (this.builders.size > 0) this.startBots();
   }
 
