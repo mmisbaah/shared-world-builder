@@ -28,6 +28,7 @@ import { ObjectivePanel, ObjectiveBanner } from './ui/objectivePanel.js';
 import { Minimap } from './ui/minimap.js';
 import { ClaimPanel } from './ui/claimPanel.js';
 import { HistoryPanel } from './ui/historyPanel.js';
+import { enterRoom, inviteLink } from './ui/invite.js';
 import { Coach, wasCoached, rememberCoached } from './ui/coach.js';
 import { Sfx } from './audio/sfx.js';
 import { playEvents } from './audio/events.js';
@@ -37,6 +38,7 @@ import { Scrubber, agoLabel } from './history/scrubber.js';
 const hud = new HUD();
 
 async function main() {
+  const inviteCode = await enterRoom();
   hud.boot(0.05, 'Checking WebGL2 support…');
 
   // --- context --------------------------------------------------------------
@@ -88,7 +90,20 @@ async function main() {
 
   hud.boot(0.6, 'Connecting to the world…');
   const conn = new Connection(world, CONFIG);
-  await conn.connect();
+  conn.on('authError', (err) => {
+    if (err?.message === 'Invalid invite code') window.location.reload();
+    else hud.toast('Connection failed. Retrying…', 'warn');
+  });
+  await conn.connect(inviteCode);
+  document.getElementById('room-code').textContent = inviteCode;
+  document.getElementById('btn-share').onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(inviteLink(inviteCode));
+      hud.toast('Invite link copied. Send it to a friend.', 'good');
+    } catch {
+      hud.toast('Share this code: ' + inviteCode, 'warn');
+    }
+  };
 
   const overlay = new WorldOverlay(ctx.scene);
   const props = new PropRenderer(ctx.scene);
@@ -296,6 +311,7 @@ async function main() {
   let lastAmbienceAt = -Infinity;
 
   conn.on('welcome', (msg) => {
+    document.getElementById('btn-conflict').hidden = !msg.demoRaceEnabled;
     hud.log(`joined as ${msg.you.name}`, 'good');
     hud.toast(`Welcome, ${msg.you.name}`, 'good');
     ctx.rig.focus(new THREE.Vector3(0, 4, 0), 46);
@@ -757,7 +773,7 @@ async function main() {
 
     let log;
     try {
-      const res = await fetch('/api/history');
+      const res = await fetch('/api/history', { headers: { 'X-World-Code': inviteCode } });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       log = await res.json();
     } catch (err) {

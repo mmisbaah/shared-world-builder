@@ -192,23 +192,20 @@ export class Connection {
   // Lifecycle
   // -------------------------------------------------------------------------
 
-  async connect() {
-    // Loaded lazily so the module graph stays free of the network dependency for
-    // anything that only needs the reconciliation logic.
-    const { io } = await import(SOCKET_IO_URL);
-
-    this.socket = io({
-      // Polling first, websocket second. Websocket is the better transport but it
-      // is also the one that gets silently dropped by proxies and headless
-      // environments; listing it first turns that into a permanent reconnect loop
-      // rather than a transparent upgrade. Polling answers immediately and the
-      // engine upgrades on its own once the socket is proven to work.
-      transports: ['polling', 'websocket'],
-      upgrade: true,
-      reconnectionDelay: 500,
-      reconnectionDelayMax: 4000,
-      reconnectionAttempts: Infinity,
-    });
+  async connect(inviteCode) {
+    if (window.location.hostname === '127.0.0.1' || window.location.hostname === 'localhost') {
+      const { io } = await import('/socket.io/socket.io.esm.min.js');
+      this.socket = io({
+        auth: { inviteCode },
+        transports: ['polling', 'websocket'],
+        upgrade: true,
+        reconnectionDelay: 500,
+        reconnectionDelayMax: 4000,
+        reconnectionAttempts: Infinity,
+      });
+    } else {
+      this.socket = createCloudSocket(inviteCode);
+    }
     this._wireSocket(this.socket);
     return this;
   }
@@ -222,6 +219,7 @@ export class Connection {
    */
   _wireSocket(socket) {
     socket.on('connect', () => { this.connected = true; this._emit('status'); });
+    socket.on('connect_error', (err) => this._emit('authError', err));
     socket.on('disconnect', () => {
       this.connected = false;
       // Every pending op is now unanswerable; roll them all back so the world does

@@ -23,6 +23,18 @@
 
 <div id="viewport"></div>
 
+<div id="invite-gate" class="invite-gate">
+  <form id="invite-form" class="invite-card">
+    <div class="boot-mark"><i class="fa-solid fa-users"></i></div>
+    <h1>Join the shared world</h1>
+    <p>Ask a friend for the room code, or open their invite link.</p>
+    <label for="invite-code">Room code</label>
+    <input id="invite-code" name="code" maxlength="12" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="ABCDEFGH" required>
+    <p id="invite-error" class="invite-error" role="alert"></p>
+    <button id="invite-submit" class="btn btn-indigo" type="submit">Join world</button>
+  </form>
+</div>
+
 <!-- Boot / fatal gate -------------------------------------------------- -->
 <div id="boot" class="boot">
   <div class="boot-card">
@@ -60,7 +72,10 @@
       in-flight <b id="stat-inflight">0</b>
     </div>
     <div class="sep"></div>
-    <button id="btn-conflict" class="btn btn-danger">
+    <button id="btn-share" class="btn btn-indigo" type="button" title="Copy an invite link">
+      <i class="fa-solid fa-link"></i> Room <span id="room-code">—</span>
+    </button>
+    <button id="btn-conflict" class="btn btn-danger" hidden>
       <i class="fa-solid fa-bolt-lightning"></i> Force conflict
     </button>
   </div>

@@ -35,6 +35,32 @@ body.no-select { user-select: none; }
 #viewport { position: fixed; inset: 0; }
 #viewport canvas { display: block; width: 100%; height: 100%; }
 
+.invite-gate {
+  position: fixed; inset: 0; z-index: 200;
+  display: grid; place-items: center; padding: 20px;
+  background: radial-gradient(1000px 600px at 50% 40%, #142447, #05070f 72%);
+}
+.invite-gate.gone { display: none; }
+.invite-card {
+  width: min(100%, 380px); padding: 30px; border-radius: 18px;
+  border: 1px solid var(--stroke-strong); background: var(--panel-solid);
+  box-shadow: 0 24px 80px rgba(0,0,0,.4);
+  display: flex; flex-direction: column; gap: 12px;
+}
+.invite-card .boot-mark { margin-bottom: 4px; }
+.invite-card h1 { margin: 0; font-size: 19px; text-align: center; }
+.invite-card p { color: var(--dim); text-align: center; margin: 0 0 8px; }
+.invite-card label { font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.invite-card input {
+  width: 100%; padding: 12px; border-radius: 9px;
+  border: 1px solid var(--stroke-strong); background: #080d1a;
+  color: var(--text); font: 600 20px 'JetBrains Mono', monospace;
+  text-align: center; letter-spacing: .12em; text-transform: uppercase;
+}
+.invite-card input:focus { outline: 2px solid var(--cyan); outline-offset: 2px; }
+.invite-card .invite-error { min-height: 16px; margin: 0; color: var(--rose); font-size: 12px; }
+.invite-card button { justify-content: center; padding: 11px; }
+
 /* ---------------------------------------------------------------- boot -- */
 
 .boot {
@@ -123,6 +149,7 @@ body.no-select { user-select: none; }
   border: 1px solid var(--stroke-strong);
   transition: background .16s, transform .08s, border-color .16s;
 }
+.btn[hidden] { display: none; }
 .btn:hover { background: rgba(255,255,255,.1); }
 .btn:active { transform: scale(.96); }
 /* "Nothing to undo" is the normal state at boot, so the control has to read as

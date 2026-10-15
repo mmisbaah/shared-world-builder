@@ -156,7 +156,8 @@ export class Authority {
   // -------------------------------------------------------------------------
 
   inBounds(x, y, z) {
-    return y >= WORLD.MIN_Y && y < WORLD.MAX_Y
+    return Number.isInteger(x) && Number.isInteger(y) && Number.isInteger(z)
+      && y >= WORLD.MIN_Y && y < WORLD.MAX_Y
       && x * x + z * z <= WORLD.RADIUS * WORLD.RADIUS;
   }
 

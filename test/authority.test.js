@@ -81,6 +81,9 @@ test('build bounds are enforced on every axis', () => {
   assert.equal(a.apply({ id: ++seq, t: OP.PLACE_BLOCK, x: 9999, y: 1, z: 0, mat: 1 }, ME).deny, DENY.OUT_OF_BOUNDS);
   assert.equal(a.apply({ id: ++seq, t: OP.PLACE_BLOCK, x: 0, y: -1, z: 0, mat: 1 }, ME).deny, DENY.OUT_OF_BOUNDS);
   assert.equal(a.apply({ id: ++seq, t: OP.PLACE_BLOCK, x: 0, y: 9999, z: 0, mat: 1 }, ME).deny, DENY.OUT_OF_BOUNDS);
+  assert.equal(a.apply({ id: ++seq, t: OP.PLACE_BLOCK, x: 0.5, y: 1, z: 0, mat: 1 }, ME).deny, DENY.OUT_OF_BOUNDS);
+  assert.equal(a.apply({ id: ++seq, t: OP.REQUEST_LOCK, x: 0, y: 1.5, z: 0 }, ME).deny, DENY.OUT_OF_BOUNDS);
+  assert.equal(a.chunks.size, 0, 'invalid coordinates must not create a chunk');
 });
 
 test('a claimed zone rejects foreign builders but not the owner', () => {

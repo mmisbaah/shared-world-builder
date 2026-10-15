@@ -1,4 +1,5 @@
 import http from 'node:http';
+import { getInviteCode, matchesInviteCode } from './invite.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -15,10 +16,17 @@ import { Persistence } from './persistence.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 5173;
+const DEMO_RACE_ENABLED = process.env.SWB_DEMO_RACE === '1';
+const DATA_DIR = process.env.SWB_DATA || path.join(__dirname, '..', 'data');
+const INVITE_CODE = getInviteCode(DATA_DIR);
 
 const app = express();
 const server = http.createServer(app);
 const io = new SocketServer(server, { cors: { origin: '*' } });
+io.use((socket, next) => {
+  if (matchesInviteCode(INVITE_CODE, socket.handshake.auth?.inviteCode)) next();
+  else next(new Error('Invalid invite code'));
+});
 
 // Assets are served un-cached. This is a development server: browser caching of
 // ES modules means an edited shader or module can keep running the previous
@@ -33,6 +41,14 @@ app.use(express.static(path.join(__dirname, '..', 'public'), staticOpts));
 // fetch it too. Serving it at the root makes the relative paths in the client
 // modules resolve without duplicating or rewriting anything.
 app.use('/shared', express.static(path.join(__dirname, '..', 'shared'), staticOpts));
+
+app.post('/api/join', express.json({ limit: '256b' }), (req, res) => {
+  if (!matchesInviteCode(INVITE_CODE, req.body?.code)) {
+    res.status(403).json({ error: 'Invalid invite code' });
+    return;
+  }
+  res.json({ ok: true });
+});
 
 // ---------------------------------------------------------------------------
 // Frame capture (development only)
@@ -57,7 +73,7 @@ app.use('/shared', express.static(path.join(__dirname, '..', 'shared'), staticOp
 // previous lighting revisions of this project failed precisely because nobody could
 // answer it.
 const CAPTURE_ENABLED = process.env.SWB_CAPTURE === '1';
-const CAPTURE_DIR = path.join(process.env.SWB_DATA || path.join(__dirname, '..', 'data'), 'captures');
+const CAPTURE_DIR = path.join(DATA_DIR, 'captures');
 const CAPTURE_MAX = '4mb';
 /** Monotonic counter so two captures in the same millisecond do not collide. */
 let captureSeq = 0;
@@ -104,7 +120,7 @@ const bots = new BotSwarm(authority, (payload) => io.emit('botAction', payload),
 const persistence = new Persistence({
   authority,
   objectives,
-  dir: process.env.SWB_DATA || path.join(__dirname, '..', 'data'),
+  dir: DATA_DIR,
 });
 
 // ---------------------------------------------------------------------------
@@ -226,6 +242,7 @@ io.on('connection', (socket) => {
     chunkSize: CHUNK_SIZE,
     tickMs: WORLD.TICK_MS,
     lockTtlMs: WORLD.LOCK_TTL_MS,
+    demoRaceEnabled: DEMO_RACE_ENABLED,
       // Claim timing travels with the welcome so the client renders the same clock
       // the server is enforcing, rather than a local copy that can drift from it.
       zoneTtlMs: WORLD.ZONE_TTL_MS,
@@ -240,17 +257,22 @@ io.on('connection', (socket) => {
 
   socket.on('op', (op) => {
     if (!op || typeof op.t !== 'number') return;
-    const result = authority.apply(op, actor);
+    // The forced race writes a rival block while rejecting the sender.
+    // Only an explicit host setting enables this demo hook.
+    const safeOp = { ...op, forceRace: DEMO_RACE_ENABLED && op.forceRace === true };
+    const result = authority.apply(safeOp, actor);
 
-    // Only accepted ops count toward the shared ladder. A denied op changed
-    // nothing, so letting it count would let a builder "contribute" by spamming
-    // invalid requests.
+    // Only accepted human ops count toward the shared ladder. A rejected demo
+    // race can write a rival block, but it is not a human contribution.
     //
     // This is also the only place a *human* is recorded. Bots go through
     // commitAs/commitPropAs and never reach here, which is exactly what the
     // "an objective needs a human" rule depends on.
     if (result.ok) {
       objectives.noteHumanContribution(actor.id);
+      persistence.markDirty();
+    } else if (result.winner) {
+      // A demo race changed the world despite rejecting the human op.
       persistence.markDirty();
     }
 
@@ -455,13 +477,18 @@ app.get('/api/status', (_req, res) => {
  * `slice` returns a copy, not the live array, because the world keeps being
  * edited while this response is in flight.
  */
-app.get('/api/history', (_req, res) => {
+app.get('/api/history', (req, res) => {
+  if (!matchesInviteCode(INVITE_CODE, req.get('x-world-code'))) {
+    res.status(403).json({ error: 'Invalid invite code' });
+    return;
+  }
   const h = authority.history;
   res.json({ span: h.span(), length: h.length, entries: h.slice(0, h.length) });
 });
 
 server.listen(PORT, () => {
   console.log(`Shared World Builder -> http://localhost:${PORT}`);
+  console.log('  invite code: ' + INVITE_CODE + ' (share only with players)');
   console.log(
     `  column ${CHUNK_SIZE}x${WORLD.MAX_Y}x${CHUNK_SIZE} | tick ${WORLD.TICK_MS}ms`
     + ` | radius ${WORLD.RADIUS}`,

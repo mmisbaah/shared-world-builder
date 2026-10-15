@@ -13,3 +13,9 @@ data/
 # Server logs, redirected by the startup command into the temp directory but
 # written here if PORT/SWB_CAPTURE are set by hand.
 *.log
+
+# Cloudflare static asset build.
+dist/
+
+.dev.vars
+.wrangler/

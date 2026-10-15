@@ -9,11 +9,52 @@ npm start          # http://localhost:5173
 npm test           # node --test test/
 ```
 
+The forced-race demo button is disabled by default. Set `SWB_DEMO_RACE=1` when
+starting the server to enable it for a local demonstration; this lets clients
+request a rival block write while their own placement is rejected.
+
 The port is overridable, which is worth knowing the hard way:
 
 ```
 PORT=5174 npm start
 ```
+
+## Invite friends
+
+The server has one shared world and one eight-character room code. On first start it
+creates `data/invite-code.txt` and prints the code in the server log. Enter it on
+the Join screen. Once inside, click **Room CODE** to copy an invite link; friends
+can open that link or enter the code themselves. Everyone with the code joins the
+same world and sees live edits.
+
+The code survives server restarts because it is kept with the world data. To choose
+one yourself, set `SWB_INVITE_CODE` to eight letters or digits from the displayed
+alphabet before starting the server. Keep the code private: anyone who has it can
+build in the world. A new code takes effect after a server restart.
+
+## Cloudflare hosting
+
+Cloudflare hosts the public game at [shared-world.mellowpilot.com](https://shared-world.mellowpilot.com).
+The browser connects to a Worker and a Durable Object over WebSocket. Its world
+is saved in Cloudflare storage, so no player's computer needs to stay on.
+
+To publish a new version, use Node.js 22 or newer:
+
+```
+npm run build:cloudflare
+npx wrangler deploy
+```
+
+Set the invite code once as a Worker secret (use the same eight-character code
+already shared with friends):
+
+```
+npx wrangler secret put INVITE_CODE --name shared-world-builder
+```
+
+The live Worker route is configured in `wrangler.jsonc`. For local testing,
+put `INVITE_CODE=YOURCODE` in `.dev.vars` and run `npx wrangler dev`.
+The Node server remains available for localhost development with `npm start`.
 
 **5173 is the default and it collides.** Another project in this workspace held it
 while this one was being verified, and the symptom was not an error — it was the
