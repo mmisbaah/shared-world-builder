@@ -193,7 +193,8 @@ export class Connection {
   // -------------------------------------------------------------------------
 
   async connect(inviteCode) {
-    if (window.location.hostname === '127.0.0.1' || window.location.hostname === 'localhost') {
+    if ((window.location.hostname === '127.0.0.1' || window.location.hostname === 'localhost')
+      && window.location.port === '5173') {
       const { io } = await import('/socket.io/socket.io.esm.min.js');
       this.socket = io({
         auth: { inviteCode },

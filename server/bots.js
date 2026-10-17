@@ -89,6 +89,7 @@ export class BotSwarm {
     this.authority = authority;
     this.broadcast = broadcast;
     this.objectives = opts.objectives ?? null;
+    this.profiles = opts.profiles ?? BOT_PROFILES;
     this.onWorldChanged = opts.onWorldChanged ?? (() => {});
 
     this.enabled = true;
@@ -106,7 +107,7 @@ export class BotSwarm {
     this.claimDecay = opts.claimDecay ?? true;
 
     // Bots stand in for lost races so a denied client op names a real rival.
-    authority.rivals = BOT_PROFILES.map((p) => ({ ...p, mat: 8 }));
+    authority.rivals = this.profiles.map((p) => ({ ...p, mat: 8 }));
 
     this.stats = {
       commits: 0, propCommits: 0, intentChanges: 0,
@@ -139,7 +140,7 @@ export class BotSwarm {
       }
       this.workers.clear();
     } else if (this.workers.size === 0) {
-      for (const profile of BOT_PROFILES) this.spawn(profile);
+      for (const profile of this.profiles) this.spawn(profile);
     }
   }
 
@@ -844,7 +845,7 @@ export class BotSwarm {
 
   /** Broadcast the current swarm roster, including what each bot is working on. */
   roster() {
-    return BOT_PROFILES.map((p) => {
+    return this.profiles.map((p) => {
       const worker = this.workers.get(p.id);
       return {
         id: p.id,

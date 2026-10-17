@@ -3,25 +3,26 @@ import { Authority } from '../server/authority.js';
 import { BotSwarm } from '../server/bots.js';
 import { ObjectiveTracker } from '../server/objectives.js';
 import { generateIsland } from '../shared/atoll.js';
+import { soloTeam } from '../shared/soloBots.js';
 import { CHUNK_SIZE, OP, DENY, EV, WORLD, encodeCells, decodeCells } from '../shared/protocol.js';
 
-const NAMES = [
-  ['Rivet', '#22d3ee'], ['Cobalt', '#818cf8'], ['Sable', '#f472b6'],
-  ['Flint', '#fb923c'], ['Verdigris', '#34d399'], ['Umber', '#a3a3a3'],
-];
 const json = (body, status = 200) => Response.json(body, { status });
-const validCode = (expected, actual) =>
-  typeof expected === 'string' && expected.length === 8 &&
-  typeof actual === 'string' && actual.toUpperCase().replace(/[\s-]/g, '') === expected;
+const validGameId = (value) =>
+  typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
 
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-    if (url.pathname.startsWith('/api/')) {
-      const id = env.WORLD.idFromName('shared-world');
-      return env.WORLD.get(id).fetch(request);
+    if (!url.pathname.startsWith('/api/')) return env.ASSETS.fetch(request);
+    if (url.pathname === '/api/status' && !url.searchParams.has('game')) {
+      return json({ host: 'cloudflare', mode: 'solo' });
     }
-    return env.ASSETS.fetch(request);
+    const gameId = url.pathname === '/api/solo/start'
+      ? (await request.clone().json().catch(() => null))?.gameId
+      : url.searchParams.get('game') ?? request.headers.get('x-game-id');
+    if (!validGameId(gameId)) return json({ error: 'Invalid game ID' }, 400);
+    const id = env.WORLD.idFromName('solo:' + gameId.toLowerCase());
+    return env.WORLD.get(id).fetch(request);
   },
 };
 
@@ -34,7 +35,8 @@ export class SharedWorld extends DurableObject {
     this.objectives = new ObjectiveTracker(this.authority);
     this.bots = null;
     this.builders = new Map();
-    this.nameCursor = 0;
+    this.teamIds = null;
+    this.playerSocket = state.getWebSockets()[0] ?? null;
     this.dirty = false;
     this.dirtyChunks = new Set();
     this.lastEditsSig = '';
@@ -60,6 +62,7 @@ export class SharedWorld extends DurableObject {
         c.props = new Map(saved.props ?? []);
       }
       this.authority.revCounter = meta.revCounter ?? 1;
+      this.teamIds = soloTeam(meta.teamIds) ? meta.teamIds : null;
       this.authority.restoreZones((meta.zones ?? []).filter((z) => !z.ownerId?.startsWith('bot_')));
       this.objectives.index = meta.objectives?.index ?? 0;
       this.objectives.completed = meta.objectives?.completed ?? [];
@@ -105,13 +108,14 @@ export class SharedWorld extends DurableObject {
   }
 
   startBots() {
-    if (this.bots) return;
+    if (this.bots || !this.teamIds) return;
     this.bots = new BotSwarm(this.authority, (payload) => {
       this.dirty = true;
       this.broadcast(EV.BOT_ACTION, payload);
       this.flush();
     }, {
       objectives: this.objectives,
+      profiles: soloTeam(this.teamIds),
       onWorldChanged: () => { this.dirty = true; },
     });
     if (!this.loop) this.loop = setInterval(() => { void this.tick(); }, 100);
@@ -184,6 +188,7 @@ export class SharedWorld extends DurableObject {
       }
       await this.state.storage.put('meta', {
         initialized: true,
+        teamIds: this.teamIds,
         revCounter: this.authority.revCounter,
         zones: [...this.authority.zones.values()].filter((z) => !z.ownerId.startsWith('bot_')),
         objectives: {
@@ -205,29 +210,40 @@ export class SharedWorld extends DurableObject {
   async fetch(request) {
     await this.ready;
     const url = new URL(request.url);
-    if (url.pathname === '/api/join' && request.method === 'POST') {
+    if (url.pathname === '/api/solo/start' && request.method === 'POST') {
       const body = await request.json().catch(() => null);
-      return validCode(this.env.INVITE_CODE, body?.code)
-        ? json({ ok: true }) : json({ error: 'Invalid invite code' }, 403);
+      const selected = soloTeam(body?.teamIds);
+      if (!selected) return json({ error: 'Choose three different bots' }, 400);
+      if (this.teamIds && this.teamIds.join(',') !== body.teamIds.join(',')) {
+        return json({ error: 'This game already has a team' }, 409);
+      }
+      if (!this.teamIds) {
+        this.teamIds = [...body.teamIds];
+        this.dirty = true;
+        await this.save();
+      }
+      return json({ ok: true, teamIds: this.teamIds });
     }
     if (url.pathname === '/api/socket') {
-      if (!validCode(this.env.INVITE_CODE, url.searchParams.get('code'))) {
-        return json({ error: 'Invalid invite code' }, 403);
-      }
+      if (!this.teamIds) return json({ error: 'Start a game first' }, 409);
       if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') {
         return json({ error: 'WebSocket required' }, 426);
       }
       const pair = new WebSocketPair();
       const client = pair[0], server = pair[1];
-      const [name, color] = NAMES[this.nameCursor++ % NAMES.length];
-      const id = 'b' + crypto.randomUUID().replace(/-/g, '').slice(0, 12);
-      const actor = { id, name: name + '_' + id.slice(-4), color, joinedAt: Date.now() };
+      if (this.playerSocket) {
+        try { this.playerSocket.close(4001, 'Game opened in another tab'); } catch { /* Stale socket. */ }
+      }
+      const actor = {
+        id: 'b_player', name: 'Builder', color: '#38bdf8', joinedAt: Date.now(),
+      };
       server.serializeAttachment(actor);
       this.state.acceptWebSocket(server);
+      this.playerSocket = server;
       this.builders.set(actor.id, actor);
       if (!this.bots) this.startBots();
       this.send(server, EV.WELCOME, {
-        you: { id, name: actor.name, color },
+        you: { id: actor.id, name: actor.name, color: actor.color },
         chunkSize: CHUNK_SIZE,
         tickMs: WORLD.TICK_MS,
         lockTtlMs: WORLD.LOCK_TTL_MS,
@@ -243,15 +259,14 @@ export class SharedWorld extends DurableObject {
       return new Response(null, { status: 101, webSocket: client });
     }
     if (url.pathname === '/api/history') {
-      if (!validCode(this.env.INVITE_CODE, request.headers.get('x-world-code'))) {
-        return json({ error: 'Invalid invite code' }, 403);
-      }
       const h = this.authority.history;
       return json({ span: h.span(), length: h.length, entries: h.slice(0, h.length) });
     }
     if (url.pathname === '/api/status') {
       return json({
+        mode: 'solo',
         builders: this.builders.size,
+        teamIds: this.teamIds,
         chunks: this.authority.chunks.size,
         zones: this.authority.zones.size,
         bots: { enabled: !!this.bots?.enabled, roster: this.bots?.roster() ?? [] },
@@ -309,6 +324,8 @@ export class SharedWorld extends DurableObject {
   }
 
   async webSocketClose(ws) {
+    if (ws !== this.playerSocket) return;
+    this.playerSocket = null;
     const actor = this.actorFor(ws);
     if (actor) this.builders.delete(actor.id);
     this.broadcast(EV.PRESENCE, this.presence());

@@ -23,7 +23,23 @@
 
 <div id="viewport"></div>
 
-<div id="invite-gate" class="invite-gate">
+<div id="solo-gate" class="invite-gate" hidden>
+  <section class="invite-card solo-card" aria-labelledby="solo-title">
+    <div class="boot-mark"><i class="fa-solid fa-robot"></i></div>
+    <h1 id="solo-title">Your solo world</h1>
+    <p>Pick exactly three teammates. Your world is yours to build.</p>
+    <div id="solo-saves" class="solo-saves" hidden></div>
+    <div class="solo-pick-head">
+      <strong>Choose your team</strong>
+      <span id="solo-count">0 / 3 selected</span>
+    </div>
+    <div id="solo-roster" class="solo-roster"></div>
+    <p id="solo-error" class="invite-error" role="alert"></p>
+    <button id="solo-start" class="btn btn-indigo" type="button" disabled>Start new game</button>
+  </section>
+</div>
+
+<div id="invite-gate" class="invite-gate" hidden>
   <form id="invite-form" class="invite-card">
     <div class="boot-mark"><i class="fa-solid fa-users"></i></div>
     <h1>Join the shared world</h1>
@@ -50,7 +66,7 @@
   <div class="panel panel-title">
     <div class="mark"><i class="fa-solid fa-cubes"></i></div>
     <div class="title-text">
-      <h1>SHARED WORLD BUILDER <span class="tag">WebGL2</span></h1>
+      <h1>WORLD BUILDER <span class="tag">WebGL2</span></h1>
       <p class="mono">
         chunks <b id="stat-chunks">0</b> ·
         quads <b id="stat-quads">0</b> ·
@@ -72,6 +88,7 @@
       in-flight <b id="stat-inflight">0</b>
     </div>
     <div class="sep"></div>
+    <button id="btn-games" class="btn btn-indigo" type="button" hidden><i class="fa-solid fa-house"></i> Games</button>
     <button id="btn-share" class="btn btn-indigo" type="button" title="Copy an invite link">
       <i class="fa-solid fa-link"></i> Room <span id="room-code">—</span>
     </button>

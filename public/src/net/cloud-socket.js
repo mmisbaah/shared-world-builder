@@ -1,4 +1,4 @@
-export function createCloudSocket(inviteCode) {
+export function createCloudSocket(gameId) {
   const handlers = new Map();
   let ws;
   let closed = false;
@@ -25,7 +25,7 @@ export function createCloudSocket(inviteCode) {
     if (closed) return;
     const url = new URL('/api/socket', window.location.href);
     url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
-    url.searchParams.set('code', inviteCode);
+    url.searchParams.set('game', gameId);
     ws = new WebSocket(url);
     ws.addEventListener('open', () => {
       socket.connected = true;
@@ -41,9 +41,9 @@ export function createCloudSocket(inviteCode) {
     ws.addEventListener('close', (event) => {
       socket.connected = false;
       notify('disconnect');
-      if (event.code === 4403) {
+      if (event.code === 4001) {
         closed = true;
-        notify('connect_error', new Error('Invalid invite code'));
+        notify('connect_error', new Error('This game is open in another tab'));
       } else if (!closed) {
         setTimeout(open, retry);
         retry = Math.min(retry * 2, 4000);

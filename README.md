@@ -1,72 +1,31 @@
-# Shared World Builder
+# Solo World Builder
 
-A collaborative chunk-based voxel world builder: WebGL2 client + real socket.io
-authoritative server, sharing one greedy-meshed voxel column format.
+A WebGL2 voxel world you build with three AI teammates. Choose your team from ten bots at
+[shared-world.mellowpilot.com](https://shared-world.mellowpilot.com). Each saved game has
+one player, three selected bots, and its own persistent Cloudflare world.
+
+The **Games** button returns to the launcher, where you can continue an earlier game or
+start another. The game list is stored in this browser; clearing site data removes its
+shortcuts. The older shared world is retained in Cloudflare storage but is no longer
+offered by the solo launcher.
+
+## Develop and deploy
+
+With Node.js 22 or newer:
 
 ```
 npm install
-npm start          # http://localhost:5173
-npm test           # node --test test/
-```
-
-The forced-race demo button is disabled by default. Set `SWB_DEMO_RACE=1` when
-starting the server to enable it for a local demonstration; this lets clients
-request a rival block write while their own placement is rejected.
-
-The port is overridable, which is worth knowing the hard way:
-
-```
-PORT=5174 npm start
-```
-
-## Invite friends
-
-The server has one shared world and one eight-character room code. On first start it
-creates `data/invite-code.txt` and prints the code in the server log. Enter it on
-the Join screen. Once inside, click **Room CODE** to copy an invite link; friends
-can open that link or enter the code themselves. Everyone with the code joins the
-same world and sees live edits.
-
-The code survives server restarts because it is kept with the world data. To choose
-one yourself, set `SWB_INVITE_CODE` to eight letters or digits from the displayed
-alphabet before starting the server. Keep the code private: anyone who has it can
-build in the world. A new code takes effect after a server restart.
-
-## Cloudflare hosting
-
-Cloudflare hosts the public game at [shared-world.mellowpilot.com](https://shared-world.mellowpilot.com).
-The browser connects to a Worker and a Durable Object over WebSocket. Its world
-is saved in Cloudflare storage, so no player's computer needs to stay on.
-
-To publish a new version, use Node.js 22 or newer:
-
-```
+npm test
 npm run build:cloudflare
+npx wrangler dev --port 8787
 npx wrangler deploy
 ```
 
-Set the invite code once as a Worker secret (use the same eight-character code
-already shared with friends):
+The live Worker route is configured in `wrangler.jsonc`. Static assets and each game's
+Durable Object run in Cloudflare. The older Node/Socket.IO server remains available for
+legacy development with `npm start` on port 5173.
 
-```
-npx wrangler secret put INVITE_CODE --name shared-world-builder
-```
-
-The live Worker route is configured in `wrangler.jsonc`. For local testing,
-put `INVITE_CODE=YOURCODE` in `.dev.vars` and run `npx wrangler dev`.
-The Node server remains available for localhost development with `npm start`.
-
-**5173 is the default and it collides.** Another project in this workspace held it
-while this one was being verified, and the symptom was not an error — it was the
-*wrong application* answering on the expected port. `curl`ing the served HTML and
-checking it contains this project's markup is the fastest way to tell the difference
-from a broken build, because a page from a different app still loads fine and still
-renders a frame loop.
-
-Requires WebGL2. Boot fails with an explicit message on WebGL1 rather than
-silently degrading.
-
----
+Requires WebGL2. Boot fails with an explicit message on WebGL1.
 
 ---
 

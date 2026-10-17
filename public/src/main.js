@@ -29,6 +29,7 @@ import { Minimap } from './ui/minimap.js';
 import { ClaimPanel } from './ui/claimPanel.js';
 import { HistoryPanel } from './ui/historyPanel.js';
 import { enterRoom, inviteLink } from './ui/invite.js';
+import { enterSoloGame } from './ui/solo.js';
 import { Coach, wasCoached, rememberCoached } from './ui/coach.js';
 import { Sfx } from './audio/sfx.js';
 import { playEvents } from './audio/events.js';
@@ -38,7 +39,11 @@ import { Scrubber, agoLabel } from './history/scrubber.js';
 const hud = new HUD();
 
 async function main() {
-  const inviteCode = await enterRoom();
+  const localMode = ['localhost', '127.0.0.1'].includes(window.location.hostname)
+    && window.location.port === '5173';
+  if (localMode) document.getElementById('invite-gate').hidden = false;
+  const session = localMode ? await enterRoom() : await enterSoloGame();
+  const gameKey = localMode ? session : session.gameId;
   hud.boot(0.05, 'Checking WebGL2 support…');
 
   // --- context --------------------------------------------------------------
@@ -91,19 +96,27 @@ async function main() {
   hud.boot(0.6, 'Connecting to the world…');
   const conn = new Connection(world, CONFIG);
   conn.on('authError', (err) => {
-    if (err?.message === 'Invalid invite code') window.location.reload();
-    else hud.toast('Connection failed. Retrying…', 'warn');
+    if (localMode && err?.message === 'Invalid invite code') window.location.reload();
+    else hud.toast(err?.message ?? 'Connection failed. Retrying…', 'warn');
   });
-  await conn.connect(inviteCode);
-  document.getElementById('room-code').textContent = inviteCode;
-  document.getElementById('btn-share').onclick = async () => {
-    try {
-      await navigator.clipboard.writeText(inviteLink(inviteCode));
-      hud.toast('Invite link copied. Send it to a friend.', 'good');
-    } catch {
-      hud.toast('Share this code: ' + inviteCode, 'warn');
-    }
-  };
+  await conn.connect(gameKey);
+  if (localMode) {
+    document.getElementById('room-code').textContent = gameKey;
+    document.getElementById('btn-share').onclick = async () => {
+      try {
+        await navigator.clipboard.writeText(inviteLink(gameKey));
+        hud.toast('Invite link copied. Send it to a friend.', 'good');
+      } catch {
+        hud.toast('Share this code: ' + gameKey, 'warn');
+      }
+    };
+  } else {
+    document.getElementById('btn-share').hidden = true;
+    document.getElementById('btn-bots').hidden = true;
+    const gamesButton = document.getElementById('btn-games');
+    gamesButton.hidden = false;
+    gamesButton.onclick = () => window.location.reload();
+  }
 
   const overlay = new WorldOverlay(ctx.scene);
   const props = new PropRenderer(ctx.scene);
@@ -773,7 +786,7 @@ async function main() {
 
     let log;
     try {
-      const res = await fetch('/api/history', { headers: { 'X-World-Code': inviteCode } });
+      const res = await fetch('/api/history', { headers: { [localMode ? 'X-World-Code' : 'X-Game-Id']: gameKey } });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       log = await res.json();
     } catch (err) {
